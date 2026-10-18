@@ -1,0 +1,57 @@
+# Secrets & credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+proxy.txt
+.bridge-secret
+.service-key
+.wssecret
+.user.ini
+
+# Dependencies & build output
+node_modules/
+vendor/
+frontend/dist/
+whatsapp-engine/dist/
+backend/public/assets/
+backend/public/index.html
+
+# WhatsApp / Telegram auth sessions & caches
+.wwebjs_auth/
+.wwebjs_cache/
+.wwebjs_profiles/
+.baileys_auth/
+.auth/
+.telegram_auth/
+.puppeteer_cache/
+.cache/
+.config/
+.local/
+whatsapp-engine/data/
+whatsapp-callbridge/out/
+
+# Storage & uploaded media
+backend/public/storage/
+
+# Logs
+*.log
+logs/
+
+# Archives & database dumps
+*.tar.gz
+*.tgz
+*.sql
+*.sql.gz
+*.sqlite
+*.wav
+
+# Temp / debug artifacts
+backend/public/cb-*
+
+# OS & editor
+.DS_Store
+*.swp
+*.swo
+*~

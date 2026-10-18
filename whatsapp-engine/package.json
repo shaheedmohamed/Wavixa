@@ -1,0 +1,50 @@
+{
+  "name": "wavixa-whatsapp-engine",
+  "version": "1.0.0",
+  "description": "Independent, High-Performance WhatsApp Multi-Device Session Engine for Wavixa",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/**/*.ts",
+    "format": "prettier --write 'src/**/*.ts' 'tests/**/*.ts'"
+  },
+  "keywords": [
+    "whatsapp",
+    "engine",
+    "multi-device",
+    "noise-protocol",
+    "wavixa",
+    "saas"
+  ],
+  "author": "Wavixa Platform",
+  "license": "Proprietary",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "curve25519-js": "^0.0.4",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "ioredis": "^5.4.2",
+    "mysql2": "^3.12.0",
+    "pino": "^9.6.0",
+    "protobufjs": "^7.4.0",
+    "qrcode": "^1.5.4",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.2",
+    "@types/qrcode": "^1.5.5",
+    "@types/ws": "^8.5.13",
+    "eslint": "^8.57.1",
+    "pino-pretty": "^13.0.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,46 @@
+services:
+  whatsapp-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wavixa-whatsapp-engine
+    restart: unless-stopped
+    ports:
+      - "3005:3005"
+    environment:
+      - NODE_ENV=production
+      - ENGINE_PORT=3005
+      - ENGINE_HOST=0.0.0.0
+      - ENGINE_WORKER_ID=worker-1
+      - ENGINE_INTERNAL_SECRET=wavixa-local-api-key-2026
+      - ENGINE_MASTER_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - LARAVEL_API_URL=http://backend:8000/api
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_DATABASE=wavixa_db
+      - DB_USERNAME=wavixa_user
+      - DB_PASSWORD=secret
+    depends_on:
+      - redis
+      - mysql
+
+  redis:
+    image: redis:7-alpine
+    container_name: wavixa-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  mysql:
+    image: mysql:8.0
+    container_name: wavixa-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: wavixa_db
+      MYSQL_USER: wavixa_user
+      MYSQL_PASSWORD: secret
+      MYSQL_ROOT_PASSWORD: rootsecret
+    ports:
+      - "3306:3306"

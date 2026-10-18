@@ -1,0 +1,353 @@
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --wv-dark-950: #01040f;
+    --wv-dark-900: #020617;
+    --wv-dark-850: #050914;
+    --wv-dark-800: #080d1e;
+    --wv-dark-700: #0c1222;
+    --wv-dark-600: #12182b;
+    --wv-dark-500: #1a2338;
+    --wv-emerald-400: #00E676;
+    --wv-emerald-500: #00C853;
+    --wv-emerald-600: #00A344;
+    --wv-emerald-700: #008F3A;
+    --wv-slate-100: #f1f5f9;
+    --wv-slate-200: #e2e8f0;
+    --wv-slate-300: #cbd5e1;
+    --wv-slate-400: #94a3b8;
+    --wv-slate-500: #64748b;
+    --wv-slate-600: #475569;
+    --wv-transition-base: 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+    --wv-transition-slow: 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html, body {
+    height: 100%;
+    width: 100%;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: 'Cairo', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    background-color: var(--wv-dark-900);
+    color: var(--wv-slate-100);
+  }
+
+  #app {
+    width: 100%;
+    min-height: 100%;
+  }
+
+  /* Focus visible ring using emerald accent */
+  :focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--wv-dark-900), 0 0 0 4px var(--wv-emerald-500);
+    border-radius: 0.25rem;
+  }
+
+  ::selection {
+    background: rgba(0, 200, 83, 0.22);
+    color: #ffffff;
+  }
+}
+
+/* Custom scrollbar utility */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.5);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.55);
+}
+
+/* Line clamp utilities */
+.line-clamp-1 {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Form focus styles */
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 200, 83, 0.12);
+  border-color: var(--wv-emerald-500);
+}
+
+/* Button styles */
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Link styles */
+a {
+  transition: color 0.2s ease;
+}
+
+a:hover {
+  opacity: 0.8;
+}
+
+/* =========================================================
+   Onboarding / Product Tour Premium Styles (driver.js)
+   ========================================================= */
+
+.driver-overlay {
+  fill: rgba(15, 23, 42, 0.68) !important;
+}
+
+.driver-active-element {
+  z-index: 1000000001 !important;
+  border-radius: 16px !important;
+  box-shadow: 0 0 0 4px rgba(0, 200, 83, 0.28), 0 0 24px 6px rgba(0, 200, 83, 0.12) !important;
+  outline: none !important;
+}
+
+.driver-popover.wavixa-onboarding-popover {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(255, 255, 255, 0.5) inset;
+  min-width: 280px;
+  max-width: 340px;
+  padding: 20px;
+  color: #1e293b;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-title {
+  font-size: 16px;
+  font-weight: 900;
+  color: #0f172a;
+  line-height: 1.4;
+  padding-inline-end: 28px;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-description {
+  font-size: 13px;
+  font-weight: 500;
+  color: #64748b;
+  line-height: 1.6;
+  margin-top: 8px;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-close-btn {
+  color: #94a3b8;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  transition: all 0.2s ease;
+  top: 14px;
+  inset-inline-end: 14px;
+  left: auto;
+  right: auto;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-close-btn:hover,
+.driver-popover.wavixa-onboarding-popover .driver-popover-close-btn:focus {
+  color: #475569;
+  background: #f1f5f9;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-footer {
+  margin-top: 18px;
+  align-items: center;
+  gap: 12px;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-progress-text {
+  font-size: 12px;
+  font-weight: 700;
+  color: #94a3b8;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-footer-btn {
+  border-radius: 12px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 800;
+  transition: all 0.2s ease;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #475569;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-footer-btn:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-footer-btn + .driver-popover-footer-btn {
+  margin-inline-start: 8px;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-navigation-btns {
+  flex: 1;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-navigation-btns button + button {
+  margin-left: 0;
+  margin-inline-start: 8px;
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-btn-disabled {
+  opacity: 0.4;
+}
+
+/* Primary (Next / Done) button */
+.driver-popover.wavixa-onboarding-popover .driver-popover-next-btn {
+  background: var(--wv-emerald-500);
+  border-color: var(--wv-emerald-500);
+  color: var(--wv-dark-900);
+}
+
+.driver-popover.wavixa-onboarding-popover .driver-popover-next-btn:hover {
+  background: var(--wv-emerald-400);
+  border-color: var(--wv-emerald-400);
+}
+
+/* RTL support */
+.driver-popover.wavixa-onboarding-popover[dir="rtl"] {
+  text-align: right;
+}
+
+.driver-popover.wavixa-onboarding-popover[dir="rtl"] .driver-popover-title {
+  padding-inline-end: 0;
+  padding-inline-start: 28px;
+}
+
+.driver-popover.wavixa-onboarding-popover[dir="rtl"] .driver-popover-footer {
+  flex-direction: row-reverse;
+}
+
+.driver-popover.wavixa-onboarding-popover[dir="rtl"] .driver-popover-navigation-btns {
+  justify-content: flex-start;
+}
+
+.driver-popover.wavixa-onboarding-popover[dir="rtl"] .driver-popover-close-btn {
+  left: auto;
+  right: 14px;
+}
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  .driver-popover.wavixa-onboarding-popover {
+    min-width: 240px;
+    max-width: calc(100vw - 32px);
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .driver-popover.wavixa-onboarding-popover .driver-popover-title {
+    font-size: 15px;
+  }
+
+  .driver-popover.wavixa-onboarding-popover .driver-popover-description {
+    font-size: 12px;
+  }
+
+  .driver-active-element {
+    box-shadow: 0 0 0 3px rgba(0, 200, 83, 0.28), 0 0 16px 4px rgba(0, 200, 83, 0.12) !important;
+  }
+}
+
+/* Reveal on scroll utility */
+.reveal {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1), transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.reveal-delay-1 { transition-delay: 80ms; }
+.reveal-delay-2 { transition-delay: 160ms; }
+.reveal-delay-3 { transition-delay: 240ms; }
+.reveal-delay-4 { transition-delay: 320ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

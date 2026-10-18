@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wavixa Engine — لوحة اختبار محرك واتساب المستقل</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --card-border: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: 'Cairo', sans-serif;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text-main);
+      padding: 20px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .container {
+      width: 100%;
+      max-width: 1000px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 0;
+      border-bottom: 1px solid var(--card-border);
+      margin-bottom: 24px;
+    }
+    .logo-badge {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .logo-badge h1 {
+      font-size: 22px;
+      font-weight: 800;
+      color: #fff;
+    }
+    .badge {
+      font-size: 11px;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-weight: 700;
+      background: rgba(79, 70, 229, 0.2);
+      color: #818cf8;
+      border: 1px solid rgba(79, 70, 229, 0.4);
+    }
+    .badge.success {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--success);
+      border-color: rgba(16, 185, 129, 0.3);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 20px;
+    }
+    @media (min-width: 768px) {
+      .grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+    }
+    .card-title {
+      font-size: 17px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #e2e8f0;
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    input, textarea, select {
+      width: 100%;
+      padding: 12px 14px;
+      background: #0f172a;
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      color: #fff;
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s;
+    }
+    input:focus, textarea:focus, select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);
+    }
+    .btn {
+      width: 100%;
+      padding: 12px;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+    .btn:hover {
+      background: var(--primary-hover);
+    }
+    .btn.danger {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--danger);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .btn.danger:hover {
+      background: rgba(239, 68, 68, 0.3);
+    }
+    .qr-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: #0f172a;
+      border: 1px dashed var(--card-border);
+      border-radius: 12px;
+      margin-top: 16px;
+      min-height: 220px;
+    }
+    .qr-container img {
+      max-width: 180px;
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px;
+    }
+    .pairing-box {
+      font-family: monospace;
+      font-size: 26px;
+      letter-spacing: 4px;
+      font-weight: 900;
+      color: #38bdf8;
+      background: rgba(56, 189, 248, 0.1);
+      padding: 12px 24px;
+      border-radius: 8px;
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      margin: 12px 0;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .status-pill.connected {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+    }
+    .status-pill.pending {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fbbf24;
+    }
+    .status-pill.disconnected {
+      background: rgba(239, 68, 68, 0.2);
+      color: #f87171;
+    }
+    .log-terminal {
+      background: #090d16;
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 14px;
+      font-family: monospace;
+      font-size: 12px;
+      color: #38bdf8;
+      height: 180px;
+      overflow-y: auto;
+      margin-top: 20px;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    .hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <div class="logo-badge">
+        <h1>⚡ Wavixa Independent WhatsApp Engine</h1>
+        <span class="badge">Engine v1.0 (TypeScript)</span>
+      </div>
+      <div>
+        <span id="engineStatusBadge" class="badge success">متصل بالخادم</span>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- Card 1: Connection & Pairing -->
+      <div class="card">
+        <div class="card-title">
+          <span>🔗 ربط جلسة واتساب</span>
+          <span id="sessionStatusPill" class="status-pill disconnected">غير متصل</span>
+        </div>
+
+        <div class="form-group">
+          <label>معرف الجلسة (Session ID)</label>
+          <input type="text" id="sessionId" value="wavixa-test-session">
+        </div>
+
+        <div class="form-group">
+          <label>طريقة الاقتران</label>
+          <select id="pairingMode" onchange="togglePairingMode()">
+            <option value="qr">� مسح رمز QR (Scan QR Code)</option>
+            <option value="phone">� كود الاقتران عبر رقم الهاتف (Pairing Code)</option>
+          </select>
+        </div>
+
+        <div class="form-group" id="phoneGroup">
+          <label>رقم هاتف الواتساب (مع كود الدولة)</label>
+          <input type="text" id="phoneNumber" placeholder="مثال: 201011679726" value="201011679726">
+          <div class="hint">سيتم توليد كود لتدخله داخل تطبيق واتساب: الأجهزة المرتبطة ← ربط برقم الهاتف.</div>
+        </div>
+
+        <div style="display: flex; gap: 10px;">
+          <button class="btn" id="btnConnect" onclick="startConnect()">
+            <span id="connectText">🚀 بدء عملية الربط</span>
+          </button>
+          <button class="btn danger" style="width: 100px;" onclick="disconnectSession()">
+            قطع
+          </button>
+        </div>
+
+        <div class="qr-container" id="qrContainer">
+          <div id="pairingPlaceholder" style="color: var(--text-muted); text-align: center; font-size: 13px;">
+            اضغط على "بدء عملية الربط" لتوليد كود الاقتران أو رمز QR
+          </div>
+          <div id="pairingCodeDisplay" style="display: none; text-align: center;">
+            <div style="font-size: 13px; color: var(--text-muted);">أدخل هذا الكود في هاتفك: واتساب ← الأجهزة المرتبطة ← ربط برقم الهاتف</div>
+            <div class="pairing-box" id="codeText">----</div>
+          </div>
+          <div id="qrDisplay" style="display: none; text-align: center;">
+            <div style="font-size: 12px; color: #34d399; margin-bottom: 8px;">📷 امسح الرمز من واتساب: الأجهزة المرتبطة ← ربط جهاز</div>
+            <img id="qrImage" alt="QR Code">
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Send Message -->
+      <div class="card">
+        <div class="card-title">
+          <span>✉️ إرسال رسالة واتساب تجريبية</span>
+        </div>
+
+        <div class="form-group">
+          <label>رقم المستلم (مع كود الدولة)</label>
+          <input type="text" id="msgTo" placeholder="مثال: 201011679726" value="201011679726">
+        </div>
+
+        <div class="form-group">
+          <label>نص الرسالة</label>
+          <textarea id="msgBody" rows="4" placeholder="اكتب نص رسالتك هنا...">مرحباً بك! هذه رسالة تجريبية مرسلة عبر محرك Wavixa المستقل الجديد 🚀</textarea>
+        </div>
+
+        <div class="form-group">
+          <label>معرف المعاملة الفريد (Idempotency Token)</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="clientMessageId" readonly>
+            <button class="btn" style="width: 70px;" onclick="generateNewToken()">جديد</button>
+          </div>
+          <div class="hint">حماية منع التكرار: إذا ضغطت إرسال مرتين بنفس المعرف، سيرفض المحرك تكرار الإرسال تلقائياً.</div>
+        </div>
+
+        <button class="btn" id="btnSend" onclick="sendMessage()">
+          <span id="sendText">📤 إرسال الرسالة الآن</span>
+        </button>
+
+        <div id="sendResult" style="margin-top: 14px; font-size: 13px; display: none;"></div>
+      </div>
+    </div>
+
+    <!-- Terminal Logs & Observability -->
+    <div class="card" style="margin-top: 20px;">
+      <div class="card-title" style="justify-content: space-between;">
+        <span>📊 سجل الأحداث والمراقبة الحية (Live Telemetry)</span>
+        <button onclick="clearLogs()" style="background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px;">مسح السجل</button>
+      </div>
+      <div class="log-terminal" id="terminalLogs">جاري تهيئة الاتصال بمحرك Wavixa...</div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = '/engine-api';
+    const API_SECRET = 'wavixa-local-api-key-2026';
+
+    let pollInterval = null;
+
+    function log(msg) {
+      const term = document.getElementById('terminalLogs');
+      const time = new Date().toLocaleTimeString();
+      term.textContent = `[${time}] ${msg}\n` + term.textContent;
+    }
+
+    function clearLogs() {
+      document.getElementById('terminalLogs').textContent = '';
+    }
+
+    function generateNewToken() {
+      const token = 'msg_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36);
+      document.getElementById('clientMessageId').value = token;
+    }
+
+    function togglePairingMode() {
+      const mode = document.getElementById('pairingMode').value;
+      document.getElementById('phoneGroup').style.display = mode === 'phone' ? 'block' : 'none';
+    }
+
+    async function checkStatus() {
+      const sessionId = document.getElementById('sessionId').value.trim();
+      if (!sessionId) return;
+
+      try {
+        const res = await fetch(`${API_BASE}/internal/sessions/${sessionId}`, {
+          headers: { 'Authorization': `Bearer ${API_SECRET}` }
+        });
+        const data = await res.json();
+        const pill = document.getElementById('sessionStatusPill');
+
+        if (data.status === 'connected') {
+          pill.className = 'status-pill connected';
+          pill.textContent = 'متصل بنجاح ✓';
+          document.getElementById('pairingPlaceholder').style.display = 'block';
+          document.getElementById('pairingPlaceholder').textContent = `الجهاز متصل: ${data.phoneNumber || ''} (${data.name || 'Wavixa'})`;
+          document.getElementById('pairingCodeDisplay').style.display = 'none';
+          document.getElementById('qrDisplay').style.display = 'none';
+        } else if (data.status === 'pending') {
+          pill.className = 'status-pill pending';
+          pill.textContent = 'بانتظار مسح QR / إدخال الكود...';
+
+          if (data.mode === 'phone' && data.pairingCode) {
+            document.getElementById('pairingPlaceholder').style.display = 'none';
+            document.getElementById('pairingCodeDisplay').style.display = 'block';
+            document.getElementById('qrDisplay').style.display = 'none';
+            document.getElementById('codeText').textContent = data.pairingCode;
+          } else if (data.qr) {
+            document.getElementById('pairingPlaceholder').style.display = 'none';
+            document.getElementById('pairingCodeDisplay').style.display = 'none';
+            document.getElementById('qrDisplay').style.display = 'block';
+            document.getElementById('qrImage').src = data.qr;
+          }
+        } else {
+          pill.className = 'status-pill disconnected';
+          pill.textContent = 'غير متصل';
+        }
+      } catch (err) {
+        log('خطأ أثناء فحص حالة الجلسة: ' + err.message);
+      }
+    }
+
+    async function startConnect() {
+      const sessionId = document.getElementById('sessionId').value.trim();
+      const mode = document.getElementById('pairingMode').value;
+      const phone = document.getElementById('phoneNumber').value.trim();
+
+      const btn = document.getElementById('btnConnect');
+      btn.disabled = true;
+      document.getElementById('connectText').textContent = 'جاري التهيئة...';
+
+      log(`بدء الاتصال للجلسة "${sessionId}" بنمط ${mode}...`);
+
+      try {
+        const payload = {};
+        if (mode === 'phone') {
+          payload.phone_number = phone;
+        }
+
+        const res = await fetch(`${API_BASE}/internal/sessions/${sessionId}/connect`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${API_SECRET}`
+          },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          log(`تم بدء الاتصال بنجاح. النمط: ${data.mode}`);
+          if (data.mode === 'phone' && data.pairingCode) {
+            document.getElementById('pairingPlaceholder').style.display = 'none';
+            document.getElementById('pairingCodeDisplay').style.display = 'block';
+            document.getElementById('qrDisplay').style.display = 'none';
+            document.getElementById('codeText').textContent = data.pairingCode;
+            log(`كود الاقتران: ${data.pairingCode}`);
+          } else if (data.qr) {
+            document.getElementById('pairingPlaceholder').style.display = 'none';
+            document.getElementById('pairingCodeDisplay').style.display = 'none';
+            document.getElementById('qrDisplay').style.display = 'block';
+            document.getElementById('qrImage').src = data.qr;
+            log('تم استلام رمز QR حقيقي من سيرفرات واتساب — امسحه الآن من تطبيق واتساب.');
+          }
+
+          if (pollInterval) clearInterval(pollInterval);
+          pollInterval = setInterval(checkStatus, 3000);
+          checkStatus();
+        } else if (data.qr === null && data.mode === 'qr') {
+          log('تم بدء الجلسة — جاري انتظار رمز QR من سيرفرات واتساب...');
+          if (pollInterval) clearInterval(pollInterval);
+          pollInterval = setInterval(checkStatus, 3000);
+        } else {
+          log('فشل بدء الاتصال: ' + (data.message || 'خطأ غير معروف'));
+        }
+      } catch (err) {
+        log('حدث خطأ بالاتصال: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        document.getElementById('connectText').textContent = '🚀 بدء عملية الربط';
+      }
+    }
+
+    async function disconnectSession() {
+      const sessionId = document.getElementById('sessionId').value.trim();
+      log(`قطع اتصال الجلسة ${sessionId}...`);
+      try {
+        const res = await fetch(`${API_BASE}/internal/sessions/${sessionId}/disconnect`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${API_SECRET}` }
+        });
+        const data = await res.json();
+        log(data.message || 'تم قطع الاتصال بنجاح.');
+        checkStatus();
+      } catch (err) {
+        log('خطأ أثناء قطع الاتصال: ' + err.message);
+      }
+    }
+
+    async function sendMessage() {
+      const sessionId = document.getElementById('sessionId').value.trim();
+      const to = document.getElementById('msgTo').value.trim();
+      const message = document.getElementById('msgBody').value.trim();
+      const clientMessageId = document.getElementById('clientMessageId').value.trim();
+
+      const btn = document.getElementById('btnSend');
+      const resBox = document.getElementById('sendResult');
+
+      btn.disabled = true;
+      document.getElementById('sendText').textContent = 'جاري الإرسال...';
+      resBox.style.display = 'none';
+
+      log(`إرسال رسالة إلى ${to} برقم معرف [${clientMessageId}]...`);
+
+      try {
+        const res = await fetch(`${API_BASE}/internal/messages/send`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${API_SECRET}`
+          },
+          body: JSON.stringify({
+            sessionId,
+            to,
+            message,
+            clientMessageId,
+            type: 'text'
+          })
+        });
+
+        const data = await res.json();
+        resBox.style.display = 'block';
+
+        if (res.status === 200 && data.success) {
+          resBox.style.color = '#34d399';
+          resBox.innerHTML = `✓ تم الإرسال بنجاح! المعرف: <strong>${data.messageId}</strong>`;
+          log(`تم الإرسال بنجاح. معرف الرسالة: ${data.messageId}`);
+        } else if (res.status === 409) {
+          resBox.style.color = '#f59e0b';
+          resBox.innerHTML = `⚠️ تم حجب الرسالة لمنع التكرار (Duplicate Idempotency Conflict).`;
+          log(`حماية منع التكرار: تم رفض إرسال الرسالة المكررة [${clientMessageId}]`);
+        } else if (res.status === 403) {
+          resBox.style.color = '#f87171';
+          resBox.innerHTML = `⛔ تم رفض الإرسال: المستلم مسجل بحالة Opted-Out.`;
+          log(`حماية Opt-In: تم حظر الإرسال للرقم ${to}`);
+        } else {
+          resBox.style.color = '#f87171';
+          resBox.innerHTML = `✗ خطأ في الإرسال: ${data.message || 'فشل غير متوقع'}`;
+          log(`فشل الإرسال: ${data.message}`);
+        }
+      } catch (err) {
+        resBox.style.display = 'block';
+        resBox.style.color = '#f87171';
+        resBox.innerHTML = `✗ خطأ شبكة: ${err.message}`;
+        log(`خطأ شبكة أثناء الإرسال: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+        document.getElementById('sendText').textContent = '📤 إرسال الرسالة الآن';
+      }
+    }
+
+    // Initialize page
+    generateNewToken();
+    togglePairingMode();
+    log('تم الاتصال بالخادم الداخلي بنجاح. المنفذ: 3005.');
+
+    // Auto-start the real QR pairing flow when the session isn't live,
+    // and keep polling so status/QR stay fresh.
+    (async () => {
+      await checkStatus();
+      const pill = document.getElementById('sessionStatusPill');
+      if (!pill.classList.contains('connected') && !pill.classList.contains('pending')) {
+        log('الجلسة غير متصلة — بدء توليد QR حقيقي تلقائياً...');
+        document.getElementById('pairingMode').value = 'qr';
+        togglePairingMode();
+        startConnect();
+      }
+      pollInterval = setInterval(checkStatus, 3000);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,43 @@
+{
+  "name": "n8n-nodes-wavixa",
+  "version": "0.1.0",
+  "description": "Wavixa node and trigger for n8n",
+  "keywords": [
+    "n8n",
+    "wavixa",
+    "whatsapp",
+    "node"
+  ],
+  "license": "MIT",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "n8n": {
+    "credentials": [
+      "dist/credentials/WavixaApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/Wavixa/Wavixa.node.js",
+      "dist/nodes/Wavixa/WavixaTrigger.node.js"
+    ]
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "tslint -p tsconfig.json -c tslint.json",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "n8n-core": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "n8n-workflow": "^1.0.0",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  }
+}

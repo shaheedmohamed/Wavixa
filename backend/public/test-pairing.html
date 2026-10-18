@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>اختبار اتصال واتساب عبر API</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 640px; margin: 0 auto; padding: 24px; background: #f9fafb; }
+    h1 { font-size: 1.25rem; margin-bottom: 1rem; }
+    label { display: block; margin: 0.75rem 0 0.25rem; font-size: 0.875rem; font-weight: 600; }
+    input, textarea, button { width: 100%; padding: 0.6rem; border-radius: 0.5rem; border: 1px solid #d1d5db; font-size: 0.9rem; box-sizing: border-box; }
+    button { background: #2563eb; color: white; border: none; cursor: pointer; margin-top: 0.75rem; }
+    button:disabled { background: #9ca3af; }
+    button.secondary { background: #059669; }
+    .box { background: white; padding: 1.25rem; border-radius: 0.75rem; box-shadow: 0 1px 2px rgba(0,0,0,0.05); margin-bottom: 1rem; }
+    .log { background: #1f2937; color: #f3f4f6; padding: 0.75rem; border-radius: 0.5rem; font-family: monospace; font-size: 0.8rem; white-space: pre-wrap; min-height: 120px; max-height: 300px; overflow: auto; }
+    .qr { text-align: center; margin: 1rem 0; }
+    .qr img { max-width: 280px; border: 1px solid #e5e7eb; border-radius: 0.5rem; }
+    .status { font-weight: 600; padding: 0.5rem; border-radius: 0.375rem; text-align: center; }
+    .status.connected { background: #d1fae5; color: #065f46; }
+    .status.pending { background: #fef3c7; color: #92400e; }
+    .status.disconnected { background: #fee2e2; color: #991b1b; }
+  </style>
+</head>
+<body>
+  <h1>اختبار اتصال واتساب عبر API</h1>
+
+  <div class="box">
+    <label for="baseUrl">Base URL</label>
+    <input id="baseUrl" value="https://wavixa.net" />
+
+    <label for="apiKey">API Key</label>
+    <input id="apiKey" value="wav_qfTKG73Bi8VdwBBRTSBK9xLYNCIcdyDN78DAkdNogQHhYM4m" />
+
+    <button id="createBtn">إنشاء Pairing Session</button>
+  </div>
+
+  <div class="box" id="pairingBox" style="display:none;">
+    <div id="pairingStatus" class="status pending">جاري انتظار QR...</div>
+    <div class="qr" id="qrContainer"></div>
+    <div>
+      <strong>Pairing ID:</strong> <span id="pairingId"></span><br>
+      <strong>Session Token:</strong> <span id="sessionToken"></span>
+    </div>
+  </div>
+
+  <div class="box" id="sendBox" style="display:none;">
+    <h2>إرسال رسالة من الجهاز المرتبط</h2>
+    <label for="toTo">رقم المستلم (مع كود الدولة)</label>
+    <input id="toTo" placeholder="201011679726" value="201011679726" />
+
+    <label for="messageText">الرسالة</label>
+    <textarea id="messageText" rows="3">اختبار من API pairing</textarea>
+
+    <button id="sendBtn" class="secondary">إرسال</button>
+  </div>
+
+  <div class="box">
+    <strong>السجل:</strong>
+    <div class="log" id="log"></div>
+  </div>
+
+  <script>
+    const baseUrl = document.getElementById('baseUrl');
+    const apiKey = document.getElementById('apiKey');
+    const log = document.getElementById('log');
+
+    function logMsg(msg) {
+      log.textContent += `${new Date().toLocaleTimeString()} — ${msg}\n`;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function headers() {
+      return {
+        'Authorization': `Bearer ${apiKey.value.trim()}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      };
+    }
+
+    let pollInterval = null;
+    let connected = false;
+
+    document.getElementById('createBtn').addEventListener('click', async () => {
+      connected = false;
+      document.getElementById('pairingBox').style.display = 'none';
+      document.getElementById('sendBox').style.display = 'none';
+      document.getElementById('qrContainer').innerHTML = '';
+      document.getElementById('pairingStatus').className = 'status pending';
+      document.getElementById('pairingStatus').textContent = 'جاري إنشاء Pairing...';
+
+      if (pollInterval) clearInterval(pollInterval);
+
+      try {
+        const res = await fetch(`${baseUrl.value.trim()}/api/public/whatsapp/pairing-sessions`, {
+          method: 'POST',
+          headers: headers(),
+        });
+        const data = await res.json();
+        logMsg(`Create pairing: ${res.status} ${JSON.stringify(data)}`);
+
+        if (!data.success) {
+          document.getElementById('pairingStatus').className = 'status disconnected';
+          document.getElementById('pairingStatus').textContent = data.message || 'فشل إنشاء الـ pairing';
+          document.getElementById('pairingBox').style.display = 'block';
+          return;
+        }
+
+        document.getElementById('pairingId').textContent = data.data.pairing_id;
+        document.getElementById('sessionToken').textContent = data.data.session_token;
+        document.getElementById('pairingBox').style.display = 'block';
+
+        const statusUrl = `${baseUrl.value.trim()}/api/public/whatsapp/pairing-sessions/${data.data.pairing_id}`;
+
+        pollInterval = setInterval(async () => {
+          if (connected) { clearInterval(pollInterval); return; }
+          try {
+            const statusRes = await fetch(statusUrl, { headers: headers() });
+            const statusData = await statusRes.json();
+            logMsg(`Status: ${statusRes.status} ${JSON.stringify(statusData).slice(0, 180)}`);
+
+            if (statusData.success) {
+              const s = statusData.data;
+
+              if (s.status === 'connected') {
+                connected = true;
+                clearInterval(pollInterval);
+                document.getElementById('pairingStatus').className = 'status connected';
+                document.getElementById('pairingStatus').textContent = `متصل: ${s.phone_number}`;
+                document.getElementById('qrContainer').innerHTML = '';
+                document.getElementById('sendBox').style.display = 'block';
+              } else if (s.status === 'pending' && s.qr) {
+                document.getElementById('qrContainer').innerHTML = `<img src="${s.qr}" alt="QR Code" />`;
+                document.getElementById('pairingStatus').className = 'status pending';
+                document.getElementById('pairingStatus').textContent = 'امسح QR من واتساب';
+              }
+            }
+          } catch (e) {
+            logMsg(`Polling error: ${e.message}`);
+          }
+        }, 3000);
+      } catch (e) {
+        logMsg(`Create error: ${e.message}`);
+      }
+    });
+
+    document.getElementById('sendBtn').addEventListener('click', async () => {
+      const to = document.getElementById('toTo').value.trim();
+      const message = document.getElementById('messageText').value.trim();
+      const device = document.getElementById('sessionToken').textContent.trim();
+
+      if (!to || !message || !device) {
+        logMsg('اكمل رقم المستلم والرسالة والتأكد من الاتصال.');
+        return;
+      }
+
+      try {
+        const res = await fetch(`${baseUrl.value.trim()}/api/public/whatsapp/send-message`, {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({ to, message, device }),
+        });
+        const data = await res.json();
+        logMsg(`Send: ${res.status} ${JSON.stringify(data)}`);
+      } catch (e) {
+        logMsg(`Send error: ${e.message}`);
+      }
+    });
+  </script>
+</body>
+</html>
