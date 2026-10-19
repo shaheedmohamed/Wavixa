@@ -77,7 +77,13 @@ php artisan config:cache
 chown -R www-data:www-data storage bootstrap/cache public
 ```
 
-If restoring an existing DB dump instead: `mysql -u wavixa_user -p wavixa_db < dump.sql`.
+If restoring the production data (a full dump ships in the repo root):
+
+```bash
+zcat /var/www/Wavixa/database_dump.sql.gz | mysql -u wavixa_user -p wavixa_db
+```
+
+(Run the import INSTEAD of `migrate --force` for a data-preserving deploy.)
 
 ## 5. Frontend
 

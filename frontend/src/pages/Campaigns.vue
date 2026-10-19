@@ -259,7 +259,6 @@ export default {
       loading,
       mode,
       createAllowed,
-      metaWhatsAppLink,
       statusLabel,
       statusClass,
       pauseCampaign,
