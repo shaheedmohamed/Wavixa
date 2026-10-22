@@ -23,8 +23,8 @@ return [
     | Meta Graph API settings
     |--------------------------------------------------------------------------
     */
-    'app_id' => env('META_APP_ID'),
-    'app_secret' => env('META_APP_SECRET'),
+    'app_id' => env('META_TEST_APP_ID', env('META_APP_ID')),
+    'app_secret' => env('META_TEST_APP_SECRET', env('META_APP_SECRET')),
 
     /*
     |--------------------------------------------------------------------------

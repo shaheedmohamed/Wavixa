@@ -11,6 +11,7 @@ Deploy all three — the `wavixa.net` nginx vhost below routes into the CRM path
 |---|---|---|---|
 | Main Laravel API | `backend/` | php8.5-fpm via nginx | `wavixa.net/api/*` |
 | Main SPA | `frontend/` build → `backend/public/` | static | `wavixa.net/*` |
+| CRM app (separate repo) | `/var/www/WavixaCRM` | php8.5-fpm + static | `crm.wavixa.net` (+ legacy `wavixa.net/api/crm*`) |
 | WhatsApp engine (live) | `whatsapp-engine/` | `wavixa-engine.service` | `127.0.0.1:3005` |
 | whatsapp-web.js service | `whatsapp-service/` | `wavixa-whatsapp.service` | `127.0.0.1:3002` |
 | Call bridge | `whatsapp-callbridge/` | `wavixa-callbridge.service` | `127.0.0.1:3999` |
@@ -275,13 +276,20 @@ systemctl enable --now wavixa-engine wavixa-whatsapp wavixa-callbridge \
 
 ```cron
 * * * * * cd /var/www/Wavixa/backend && /usr/bin/php artisan schedule:run >> /dev/null 2>&1
+* * * * * cd /var/www/WavixaCRM/backend && /usr/bin/php artisan schedule:run >> /dev/null 2>&1
+* * * * * cd /var/www/WavixaAcademy/backend && php artisan schedule:run >> /dev/null 2>&1
 ```
+
+(The CRM scheduler runs `whatsapp:sync-sessions` every minute and
+`backup:database` nightly — do not omit that line.)
 
 ## 9. Nginx
 
 `/etc/nginx/sites-available/wavixa.net` (+ symlink into `sites-enabled/`).
-This single vhost also routes the CRM app (`/api/crm*`, `/crm/*`) — deploy
-the WavixaCrm repo to `/var/www/WavixaCRM` first, or those routes 502.
+This vhost keeps `/api/crm*` routing into the CRM backend for backward
+compatibility — deploy the WavixaCrm repo to `/var/www/WavixaCRM` first, or
+those routes 502. The CRM SPA itself lives at `crm.wavixa.net` (see the CRM
+repo's `SERVER_SETUP.md` for that vhost); legacy `/crm*` paths redirect there.
 
 ```nginx
 server {
@@ -315,13 +323,12 @@ server {
         fastcgi_pass unix:/run/php/php8.5-fpm.sock;
     }
 
-    # CRM SPA — its own build, assets namespaced under /crm-static/.
+    # CRM SPA moved to its own subdomain — legacy /crm/* paths redirect.
     location = /crm {
-        return 301 /crm/login;
+        return 301 https://crm.wavixa.net/crm/login;
     }
     location ^~ /crm/ {
-        alias /var/www/WavixaCRM/frontend/dist/;
-        try_files $uri $uri/ /crm/index.html;
+        return 301 https://crm.wavixa.net$request_uri;
     }
     location ^~ /crm-static/ {
         alias /var/www/WavixaCRM/frontend/dist/;
@@ -406,10 +413,11 @@ server {
 }
 ```
 
-SSL via certbot (after DNS points here):
+SSL via certbot (after DNS points here). One cert covers all app domains —
+issue it after the `academy.wavixa.net` and `crm.wavixa.net` vhosts exist too:
 
 ```bash
-certbot --nginx -d wavixa.net -d www.wavixa.net
+certbot --nginx -d wavixa.net -d www.wavixa.net -d academy.wavixa.net -d crm.wavixa.net
 ```
 
 ## 10. Internal CRM vhost

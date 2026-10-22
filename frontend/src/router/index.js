@@ -25,6 +25,7 @@ import Webhooks from '@/pages/Webhooks.vue';
 import N8n from '@/pages/N8n.vue';
 import N8nDocs from '@/pages/N8nDocs.vue';
 import Pricing from '@/pages/Pricing.vue';
+import PrivacyPolicy from '@/pages/PrivacyPolicy.vue';
 import Subscription from '@/pages/Subscription.vue';
 import Settings from '@/pages/Settings.vue';
 
@@ -219,6 +220,16 @@ const routes = [
     name: 'Pricing',
     component: Pricing,
     meta: { requiresAuth: false, layout: 'default' },
+  },
+  {
+    path: '/privacy',
+    name: 'PrivacyPolicy',
+    component: PrivacyPolicy,
+    meta: { requiresAuth: false, layout: 'default' },
+  },
+  {
+    path: '/privacy-policy',
+    redirect: '/privacy',
   },
   {
     path: '/subscription',

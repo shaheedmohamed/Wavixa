@@ -290,11 +290,17 @@ before posting (same as `encodeMediaMeta` does for live messages).
 ## CRM Split (2026-10-10) — /var/www/WavixaCRM
 
 The WhatsApp CRM is now a **separate app** living in `/var/www/WavixaCRM`
-(own Laravel backend + DB `wavixa_crm` + own frontend build + engine source).
-Same URLs are preserved on this server via Nginx:
+(own Laravel backend + DB `wavixa_crm` + own frontend build + engine source),
+served from its own subdomain **`crm.wavixa.net`** (added 2026-10-19):
 
-- `/api/crm*` → `/var/www/WavixaCRM/backend/public/index.php` (direct fastcgi)
-- `/crm/*` → `/var/www/WavixaCRM/frontend/dist` (SPA), assets under `/crm-static/`
+- `crm.wavixa.net/*` → `/var/www/WavixaCRM/frontend/dist` (SPA in place),
+  `/crm-static/*` assets, `/api/crm*` → CRM backend direct fastcgi
+- Legacy `wavixa.net/crm/*` → 301 redirect to `crm.wavixa.net` (HTTPS)
+- `wavixa.net/api/crm*` still → CRM backend `index.php` (direct fastcgi) for
+  backward compatibility
+- `http://127.0.0.1:8088` → internal vhost into the CRM backend — the engine
+  posts a *copy* of every webhook there via `LARAVEL_API_URLS_EXTRA`
+  (`wavixa-engine.service`; fan-out lives in `WebhookDispatcher::notifyOne`).
 - `http://127.0.0.1:8088` → internal vhost into the CRM backend — the engine
   posts a *copy* of every webhook there via `LARAVEL_API_URLS_EXTRA`
   (`wavixa-engine.service`; fan-out lives in `WebhookDispatcher::notifyOne`).

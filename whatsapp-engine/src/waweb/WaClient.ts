@@ -971,6 +971,18 @@ export class WaClient extends EventEmitter {
       const preKey = generateWaKeyPair();
       this.creds.preKeys = this.creds.preKeys || {};
       this.creds.preKeys[preKeyId.toString()] = preKey;
+      // One-time prekeys uploaded for peers that never answer are never
+      // consumed (removePreKey only runs on pkmsg decrypt) and grew creds to
+      // 80k+ entries / 17 MB — every saveCreds then stalled the event loop in
+      // a multi-second sync JSON.stringify and the engine livelocked. Evict
+      // the oldest ids beyond a bound; live prekeys are used within seconds.
+      const storedIds = Object.keys(this.creds.preKeys);
+      if (storedIds.length > WaClient.MAX_STORED_PREKEYS) {
+        storedIds.sort((a, b) => Number(a) - Number(b));
+        for (const id of storedIds.slice(0, storedIds.length - WaClient.MAX_STORED_PREKEYS)) {
+          delete this.creds.preKeys[id];
+        }
+      }
       this.saveCreds();
 
       const keysChildren: BinaryNode[] = [
@@ -2586,7 +2598,33 @@ export class WaClient extends EventEmitter {
     }
   }
 
+  /**
+   * One-time prekeys kept locally (for pkmsg decrypt of retried messages).
+   * Unbounded growth livelocked the engine — see sendRetryRequest.
+   */
+  private static readonly MAX_STORED_PREKEYS = 500;
+
+  /**
+   * creds persistence is a synchronous write of the whole JSON blob —
+   * signal-store mutations fire it per stanza, so writes are throttled to
+   * one per interval. Intermediate mutations coalesce into the next flush.
+   */
+  private static readonly CREDS_SAVE_INTERVAL_MS = 750;
+  private credsSaveTimer: NodeJS.Timeout | null = null;
+
   private saveCreds(): void {
+    if (this.credsSaveTimer) return;
+    this.credsSaveTimer = setTimeout(() => {
+      this.credsSaveTimer = null;
+      this.flushSaveCreds();
+    }, WaClient.CREDS_SAVE_INTERVAL_MS);
+  }
+
+  private flushSaveCreds(): void {
+    if (this.credsSaveTimer) {
+      clearTimeout(this.credsSaveTimer);
+      this.credsSaveTimer = null;
+    }
     this.opts.onCredsUpdate?.(this.creds);
     this.emit('creds.update', this.creds);
   }
@@ -2617,6 +2655,7 @@ export class WaClient extends EventEmitter {
     }
     this.transport = null;
     this.noise = null;
+    this.flushSaveCreds();
 
     const statusCode = (error as { statusCode?: number })?.statusCode;
     const shouldReconnect =
