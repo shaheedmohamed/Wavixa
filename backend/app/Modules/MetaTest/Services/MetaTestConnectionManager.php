@@ -510,12 +510,15 @@ class MetaTestConnectionManager
         }
     }
 
-    public function registerPhoneNumber(MetaTestConnection $connection, string $phoneNumberId): array
+    public function registerPhoneNumber(MetaTestConnection $connection, string $phoneNumberId, string $pin = '123456'): array
     {
         return $this->client->request(
             'POST',
             "/{$phoneNumberId}/register",
-            ['messaging_product' => 'whatsapp'],
+            [
+                'messaging_product' => 'whatsapp',
+                'pin' => $pin,
+            ],
             $connection->access_token
         );
     }
