@@ -962,7 +962,8 @@
       "logs": "API Logs",
       "status": "Health Check",
       "report": "Readiness Report",
-      "chats": "Chats"
+      "chats": "Chats",
+      "more": "More"
     },
     "common": {
       "loading": "Loading...",
@@ -1025,7 +1026,17 @@
       "test_fail": "Send failed",
       "err_sdk": "Could not load the Meta SDK. Check your connection and try again.",
       "err_flow": "Meta reported an error during signup. Please try again.",
-      "err_generic": "Could not complete the Meta connection. Please try again."
+      "err_generic": "Could not complete the Meta connection. Please try again.",
+      "coex_title": "Link the WhatsApp Business app (Coexistence)",
+      "coex_desc": "Use the same number on the WhatsApp Business app and this platform together — app messages appear here and platform messages appear in the app, with no ban and no lost chats.",
+      "coex_btn": "Link app via Meta",
+      "coex_step1": "Click \"Link app via Meta\" — the official Meta dialog will open.",
+      "coex_step2": "Inside the dialog choose \"Connect your existing WhatsApp Business app\" and enter the number registered on the app.",
+      "coex_step3": "A QR screen will appear — scan it from the WhatsApp Business app on your phone to finish pairing.",
+      "coex_api_note": "For numbers already on Cloud API: link them from Meta Business Settings → WhatsApp accounts → Linked WhatsApp accounts → \"Link WhatsApp account +\".",
+      "coex_api_link": "Open Meta WhatsApp settings",
+      "coex_linked": "App linked",
+      "coex_not_linked": "API only"
     },
     "accounts": {
       "title": "Connected Meta Accounts",
@@ -1238,7 +1249,39 @@
       "voice": "Voice note",
       "tap_send": "tap to send",
       "caption_ph": "Caption (optional)",
-      "mic_denied": "Microphone access denied"
+      "mic_denied": "Microphone access denied",
+      "official_title": "Official WhatsApp",
+      "official_sub": "Meta Cloud API conversations",
+      "refresh": "Refresh chats",
+      "filter_all": "All",
+      "filter_unread": "Unread",
+      "all_numbers": "All numbers",
+      "e2e": "Official WhatsApp messages are end-to-end encrypted",
+      "reply": "Reply",
+      "forward": "Forward",
+      "copy": "Copy",
+      "download": "Download",
+      "select": "Select",
+      "info": "Message info",
+      "delete": "Delete for me",
+      "selected": "selected",
+      "replying_to": "Replying to",
+      "you": "You",
+      "deleted_msg": "Deleted message",
+      "forward_to": "Forward to",
+      "send": "Send",
+      "emoji": "Emoji",
+      "search_chat": "Search in chat",
+      "search_chat_ph": "Search messages…",
+      "hits": "hits",
+      "window_closed": "The 24-hour window has expired — free-form messages will not be delivered.",
+      "use_template": "Send an approved template",
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "status": "Status",
+      "sent_at": "Sent",
+      "delivered_at": "Delivered",
+      "read_at": "Read"
     }
   }
 }

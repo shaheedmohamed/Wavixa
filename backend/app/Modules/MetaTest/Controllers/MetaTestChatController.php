@@ -20,6 +20,8 @@ class MetaTestChatController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = MetaTestMessage::where('user_id', Auth::id())
+            ->where('is_hidden', false)
+            ->where('message_type', '!=', 'reaction')
             ->selectRaw("CASE WHEN direction = 'outgoing' THEN to_phone ELSE from_phone END as peer")
             ->selectRaw('MAX(id) as last_id')
             ->selectRaw('MAX(created_at) as last_at')
@@ -102,6 +104,7 @@ class MetaTestChatController extends Controller
         $peer = $request->input('peer');
 
         $query = MetaTestMessage::where('user_id', Auth::id())
+            ->where('is_hidden', false)
             ->where(function ($q) use ($peer) {
                 $q->where('to_phone', $peer)->orWhere('from_phone', $peer);
             })
@@ -111,7 +114,7 @@ class MetaTestChatController extends Controller
             $query->where('id', '>', (int) $request->input('since'));
         }
 
-        $messages = $query->get(['id', 'direction', 'body', 'message_type', 'status', 'meta_message_id', 'created_at', 'phone_number_id', 'from_phone', 'to_phone', 'raw_payload']);
+        $messages = $query->get(['id', 'direction', 'body', 'message_type', 'status', 'meta_message_id', 'reply_to_id', 'created_at', 'phone_number_id', 'from_phone', 'to_phone', 'raw_payload', 'sent_at', 'delivered_at', 'read_at', 'failed_at', 'error_message']);
 
         // Collect unread incoming to mark read + send Meta read receipts.
         $unread = MetaTestMessage::where('user_id', Auth::id())
@@ -171,6 +174,7 @@ class MetaTestChatController extends Controller
             'peer' => 'required|string',
             'phone_number_id' => 'nullable|integer',
             'message' => 'required|string|max:4096',
+            'reply_to' => 'nullable|integer',
         ]);
 
         $phone = $this->resolvePhone($data['phone_number_id'] ?? null);
@@ -180,7 +184,7 @@ class MetaTestChatController extends Controller
 
         try {
             $message = (new MetaTestMessagingService(Auth::id()))
-                ->sendTextMessage($phone, $data['peer'], $data['message']);
+                ->sendTextMessage($phone, $data['peer'], $data['message'], $this->resolveReplyTarget($data['reply_to'] ?? null));
 
             return response()->json(['success' => true, 'data' => $message]);
         } catch (\Throwable $e) {
@@ -201,6 +205,7 @@ class MetaTestChatController extends Controller
             'caption' => 'nullable|string|max:1024',
             'kind' => 'required|in:image,video,audio,document,voice',
             'file' => 'required|file|max:16000',
+            'reply_to' => 'nullable|integer',
         ]);
 
         $phone = $this->resolvePhone($data['phone_number_id'] ?? null);
@@ -239,7 +244,9 @@ class MetaTestChatController extends Controller
                 $sendType,
                 $mediaId,
                 $data['caption'] ?? null,
-                $sendType === 'document' ? $filename : null
+                $sendType === 'document' ? $filename : null,
+                null,
+                $this->resolveReplyTarget($data['reply_to'] ?? null)
             );
 
             if (isset($ogg) && is_file($ogg)) {
@@ -277,6 +284,149 @@ class MetaTestChatController extends Controller
             'Content-Disposition' => 'inline; filename="' . ($info['filename'] ?: 'media') . '"',
             'Cache-Control' => 'private, max-age=86400',
         ]);
+    }
+
+    /**
+     * Emoji reaction on a message (sent to Meta + aggregated locally).
+     */
+    public function react(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'message_id' => 'required|integer',
+            'emoji' => 'required|string|max:8',
+        ]);
+
+        $target = MetaTestMessage::where('id', $data['message_id'])
+            ->where('user_id', Auth::id())
+            ->first();
+        if (!$target || !$target->phoneNumber) {
+            return response()->json(['success' => false, 'message' => 'Message not found.'], 404);
+        }
+
+        try {
+            $reaction = (new MetaTestMessagingService(Auth::id()))
+                ->sendReaction($target->phoneNumber, $target, $data['emoji']);
+
+            return response()->json(['success' => true, 'data' => $reaction]);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => $this->metaErrorMessage($e)], 422);
+        }
+    }
+
+    /**
+     * Forward messages to another chat. Text resends directly; media is
+     * downloaded from Meta and re-uploaded under a new media id.
+     */
+    public function forward(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'peer' => 'required|string',
+            'phone_number_id' => 'nullable|integer',
+            'message_ids' => 'required|array|min:1|max:20',
+            'message_ids.*' => 'integer',
+        ]);
+
+        $phone = $this->resolvePhone($data['phone_number_id'] ?? null);
+        if (!$phone) {
+            return response()->json(['success' => false, 'message' => 'No active phone number.'], 404);
+        }
+
+        $messages = MetaTestMessage::where('user_id', Auth::id())
+            ->whereIn('id', $data['message_ids'])
+            ->where('message_type', '!=', 'reaction')
+            ->orderBy('id')
+            ->get();
+
+        $messaging = new MetaTestMessagingService(Auth::id());
+        $sent = [];
+        $errors = [];
+
+        foreach ($messages as $msg) {
+            try {
+                $type = $msg->message_type;
+                if ($type === 'text' || !$type) {
+                    $sent[] = $messaging->sendTextMessage($phone, $data['peer'], $msg->body ?? '');
+                } elseif (in_array($type, ['image', 'video', 'audio', 'document'])) {
+                    $info = $messaging->getMediaInfo($msg);
+                    if (empty($info['url'])) {
+                        $errors[] = "#{$msg->id}: media unavailable";
+                        continue;
+                    }
+                    $dl = Http::withToken($info['token'])->timeout(90)->get($info['url']);
+                    if (!$dl->successful()) {
+                        $errors[] = "#{$msg->id}: media download failed";
+                        continue;
+                    }
+                    $tmp = tempnam(sys_get_temp_dir(), 'wa_fwd');
+                    file_put_contents($tmp, $dl->body());
+                    $mediaId = $messaging->uploadMedia($phone, $tmp, $info['mime_type']);
+                    @unlink($tmp);
+                    $sent[] = $messaging->sendMediaMessage(
+                        $phone,
+                        $data['peer'],
+                        $type === 'voice' ? 'audio' : $type,
+                        $mediaId,
+                        $msg->body,
+                        $info['filename']
+                    );
+                }
+            } catch (\Throwable $e) {
+                $errors[] = "#{$msg->id}: " . $this->metaErrorMessage($e);
+            }
+        }
+
+        return response()->json([
+            'success' => count($sent) > 0 || empty($errors),
+            'data' => $sent,
+            'errors' => $errors,
+        ]);
+    }
+
+    /**
+     * Local delete — Meta has no remote delete, so hidden rows stay in the
+     * DB but disappear from the thread and conversation list.
+     */
+    public function hide(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'message_ids' => 'required|array|min:1|max:100',
+            'message_ids.*' => 'integer',
+        ]);
+
+        MetaTestMessage::where('user_id', Auth::id())
+            ->whereIn('id', $data['message_ids'])
+            ->update(['is_hidden' => true]);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Typing indicator — Meta anchors it to the customer's last message.
+     */
+    public function typing(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'peer' => 'required|string',
+            'phone_number_id' => 'nullable|integer',
+        ]);
+
+        $phone = $this->resolvePhone($data['phone_number_id'] ?? null);
+        if ($phone) {
+            (new MetaTestMessagingService(Auth::id()))->sendTypingIndicator($phone, $data['peer']);
+        }
+
+        return response()->json(['success' => true]);
+    }
+
+    private function resolveReplyTarget(?int $id): ?MetaTestMessage
+    {
+        if (!$id) {
+            return null;
+        }
+
+        return MetaTestMessage::where('id', $id)
+            ->where('user_id', Auth::id())
+            ->first();
     }
 
     private function resolvePhone(?int $id): ?MetaTestPhoneNumber

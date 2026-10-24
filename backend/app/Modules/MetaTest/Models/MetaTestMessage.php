@@ -18,6 +18,7 @@ class MetaTestMessage extends Model
         'api_key_id',
         'phone_number_id',
         'meta_message_id',
+        'reply_to_id',
         'conversation_id',
         'pricing_category',
         'pricing_type',
@@ -35,10 +36,12 @@ class MetaTestMessage extends Model
         'read_at',
         'failed_at',
         'error_message',
+        'is_hidden',
     ];
 
     protected $casts = [
         'raw_payload' => 'array',
+        'is_hidden' => 'boolean',
         'sent_at' => 'datetime',
         'delivered_at' => 'datetime',
         'read_at' => 'datetime',
@@ -62,5 +65,10 @@ class MetaTestMessage extends Model
     public function phoneNumber(): BelongsTo
     {
         return $this->belongsTo(MetaTestPhoneNumber::class, 'phone_number_id');
+    }
+
+    public function replyTo(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'reply_to_id');
     }
 }

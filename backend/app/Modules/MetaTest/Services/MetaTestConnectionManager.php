@@ -440,7 +440,7 @@ class MetaTestConnectionManager
             'GET',
             "/{$waba->meta_waba_id}/phone_numbers",
             [
-                'fields' => 'id,display_phone_number,verified_name,quality_rating,status,account_mode,name_status,certificate,messaging_limit_tier,platform_type',
+                'fields' => 'id,display_phone_number,verified_name,quality_rating,status,account_mode,name_status,certificate,messaging_limit_tier,platform_type,is_on_biz_app',
             ],
             $connection->access_token
         );

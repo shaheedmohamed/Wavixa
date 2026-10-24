@@ -79,8 +79,8 @@ class MetaTestService {
     return api.get(`${BASE}/chats/messages`, { params: { peer, since } });
   }
 
-  chatSend(peer, message, phoneNumberId = null) {
-    return api.post(`${BASE}/chats/send`, { peer, message, phone_number_id: phoneNumberId });
+  chatSend(peer, message, phoneNumberId = null, replyTo = null) {
+    return api.post(`${BASE}/chats/send`, { peer, message, phone_number_id: phoneNumberId, reply_to: replyTo });
   }
 
   chatSendMedia(peer, formData) {
@@ -88,6 +88,22 @@ class MetaTestService {
     return api.post(`${BASE}/chats/send-media`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
+  }
+
+  chatReact(messageId, emoji) {
+    return api.post(`${BASE}/chats/react`, { message_id: messageId, emoji });
+  }
+
+  chatForward(peer, messageIds, phoneNumberId = null) {
+    return api.post(`${BASE}/chats/forward`, { peer, message_ids: messageIds, phone_number_id: phoneNumberId });
+  }
+
+  chatHide(messageIds) {
+    return api.post(`${BASE}/chats/hide`, { message_ids: messageIds });
+  }
+
+  chatTyping(peer, phoneNumberId = null) {
+    return api.post(`${BASE}/chats/typing`, { peer, phone_number_id: phoneNumberId });
   }
 
   chatSetName(peer, name) {

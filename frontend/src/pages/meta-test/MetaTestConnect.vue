@@ -82,6 +82,60 @@
       </button>
     </div>
 
+    <!-- Coexistence: WhatsApp Business app + Cloud API on the same number -->
+    <div class="mt-6 bg-emerald-50/60 border border-emerald-200 rounded-2xl p-5 space-y-4">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <div class="flex items-center gap-3">
+          <span class="w-10 h-10 rounded-xl bg-emerald-500 text-white flex items-center justify-center shrink-0">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21 5.46 0 9.91-4.45 9.91-9.91C21.95 6.45 17.5 2 12.04 2z"/></svg>
+          </span>
+          <div>
+            <h3 class="font-bold text-emerald-900 text-sm">{{ t('meta.connect.coex_title') }}</h3>
+            <p class="text-xs text-emerald-800/80 mt-0.5 max-w-xl leading-relaxed">{{ t('meta.connect.coex_desc') }}</p>
+          </div>
+        </div>
+        <button
+          @click="startConnect"
+          :disabled="connecting || exchanging"
+          class="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 shrink-0"
+        >
+          {{ t('meta.connect.coex_btn') }}
+        </button>
+      </div>
+
+      <ol class="text-xs text-emerald-900/80 space-y-1.5 list-decimal list-inside marker:font-bold">
+        <li>{{ t('meta.connect.coex_step1') }}</li>
+        <li>{{ t('meta.connect.coex_step2') }}</li>
+        <li>{{ t('meta.connect.coex_step3') }}</li>
+      </ol>
+
+      <div class="text-[11px] text-emerald-800/70 bg-white/60 border border-emerald-100 rounded-lg px-3 py-2">
+        {{ t('meta.connect.coex_api_note') }}
+        <a
+          href="https://business.facebook.com/latest/settings/whatsapp_business_presence"
+          target="_blank"
+          class="font-bold underline hover:text-emerald-900"
+        >{{ t('meta.connect.coex_api_link') }}</a>
+      </div>
+
+      <!-- Per-number app link status -->
+      <div v-if="phoneNumbers.length" class="flex flex-wrap gap-2">
+        <span
+          v-for="p in phoneNumbers"
+          :key="p.id"
+          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold border"
+          :class="p.raw_data?.is_on_biz_app
+            ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+            : 'bg-white text-slate-500 border-slate-200'"
+          dir="ltr"
+        >
+          <span class="w-1.5 h-1.5 rounded-full" :class="p.raw_data?.is_on_biz_app ? 'bg-emerald-500' : 'bg-slate-300'"></span>
+          {{ p.phone_number }}
+          <span class="font-normal" dir="auto">— {{ p.raw_data?.is_on_biz_app ? t('meta.connect.coex_linked') : t('meta.connect.coex_not_linked') }}</span>
+        </span>
+      </div>
+    </div>
+
     <div class="mt-6 text-sm text-gray-500">
       <p>{{ t('meta.dashboard.redirect_uri') }}: {{ data?.redirect_uri || '—' }}</p>
       <p class="mt-1">{{ t('meta.connect.status_url') }}: {{ statusMessage }}</p>

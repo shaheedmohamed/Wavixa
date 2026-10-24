@@ -73,6 +73,10 @@ Route::middleware(['meta-test', 'auth:sanctum'])
         Route::get('/chats/messages', [MetaTestChatController::class, 'messages']);
         Route::post('/chats/send', [MetaTestChatController::class, 'send']);
         Route::post('/chats/send-media', [MetaTestChatController::class, 'sendMedia']);
+        Route::post('/chats/react', [MetaTestChatController::class, 'react']);
+        Route::post('/chats/forward', [MetaTestChatController::class, 'forward']);
+        Route::post('/chats/hide', [MetaTestChatController::class, 'hide']);
+        Route::post('/chats/typing', [MetaTestChatController::class, 'typing']);
         Route::post('/chats/name', [MetaTestChatController::class, 'setName']);
         Route::get('/chats/media/{id}', [MetaTestChatController::class, 'media']);
 

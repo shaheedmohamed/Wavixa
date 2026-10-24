@@ -515,6 +515,13 @@ const routes = [
     }),
   },
   {
+    // Full-bleed WhatsApp-style chat — lives outside the /meta card wrapper.
+    path: '/meta/chats',
+    name: 'MetaChats',
+    component: MetaTestChats,
+    meta: { requiresAuth: true, layout: 'dashboard' },
+  },
+  {
     path: '/meta',
     component: MetaTest,
     meta: { requiresAuth: true, layout: 'dashboard' },
@@ -526,7 +533,6 @@ const routes = [
       { path: 'accounts', name: 'MetaAccounts', component: MetaTestAccounts },
       { path: 'phone-numbers', name: 'MetaPhoneNumbers', component: MetaTestPhoneNumbers },
       { path: 'messages', name: 'MetaMessages', component: MetaTestMessages },
-      { path: 'chats', name: 'MetaChats', component: MetaTestChats },
       { path: 'templates', name: 'MetaTemplates', component: MetaTestTemplates },
       { path: 'campaigns', name: 'MetaCampaigns', component: MetaTestCampaigns },
       { path: 'campaigns/new', name: 'MetaCampaignCreate', component: MetaTestCampaignCreate },

@@ -39,7 +39,7 @@ class MetaTestMessagingService
     /**
      * Send a free-form text message. Only works inside the 24h conversation window.
      */
-    public function sendTextMessage(MetaTestPhoneNumber $phone, string $to, string $text): MetaTestMessage
+    public function sendTextMessage(MetaTestPhoneNumber $phone, string $to, string $text, ?MetaTestMessage $replyTo = null): MetaTestMessage
     {
         $connection = $phone->waba->connection;
 
@@ -61,6 +61,10 @@ class MetaTestMessagingService
             ],
         ];
 
+        if ($replyTo?->meta_message_id) {
+            $payload['context'] = ['message_id' => $replyTo->meta_message_id];
+        }
+
         $result = $this->client->request(
             'POST',
             "/{$phone->meta_phone_number_id}/messages",
@@ -78,6 +82,7 @@ class MetaTestMessagingService
             'to_phone' => $this->normalizePhone($to),
             'body' => $text,
             'message_type' => 'text',
+            'reply_to_id' => $replyTo?->id,
             'raw_payload' => $result,
             'status' => MetaTestMessage::STATUS_SENT,
             'sent_at' => now(),
@@ -182,7 +187,7 @@ class MetaTestMessagingService
      * Send an image / video / audio / document message by uploaded media id.
      * Audio sent with mime audio/ogg renders as a WhatsApp voice note.
      */
-    public function sendMediaMessage(MetaTestPhoneNumber $phone, string $to, string $type, string $mediaId, ?string $caption = null, ?string $filename = null, ?string $localPath = null): MetaTestMessage
+    public function sendMediaMessage(MetaTestPhoneNumber $phone, string $to, string $type, string $mediaId, ?string $caption = null, ?string $filename = null, ?string $localPath = null, ?MetaTestMessage $replyTo = null): MetaTestMessage
     {
         $connection = $phone->waba->connection;
         if (!$connection) {
@@ -197,16 +202,22 @@ class MetaTestMessagingService
             $mediaBlock['filename'] = $filename;
         }
 
+        $payload = [
+            'messaging_product' => 'whatsapp',
+            'recipient_type' => 'individual',
+            'to' => $this->normalizePhone($to),
+            'type' => $type,
+            $type => $mediaBlock,
+        ];
+
+        if ($replyTo?->meta_message_id) {
+            $payload['context'] = ['message_id' => $replyTo->meta_message_id];
+        }
+
         $result = $this->client->request(
             'POST',
             "/{$phone->meta_phone_number_id}/messages",
-            [
-                'messaging_product' => 'whatsapp',
-                'recipient_type' => 'individual',
-                'to' => $this->normalizePhone($to),
-                'type' => $type,
-                $type => $mediaBlock,
-            ],
+            $payload,
             $connection->access_token
         );
 
@@ -220,6 +231,7 @@ class MetaTestMessagingService
             'to_phone' => $this->normalizePhone($to),
             'body' => $caption,
             'message_type' => $type,
+            'reply_to_id' => $replyTo?->id,
             'raw_payload' => array_merge($result, [$type => $mediaBlock]),
             'status' => MetaTestMessage::STATUS_SENT,
             'sent_at' => now(),
@@ -253,6 +265,102 @@ class MetaTestMessagingService
             );
         } catch (\Throwable $e) {
             Log::debug('MetaTest: mark read failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Send / update an emoji reaction on a message (Cloud API type=reaction).
+     * Empty $emoji removes the reaction. A local reaction row is stored so the
+     * chat UI can aggregate reactions per target message.
+     */
+    public function sendReaction(MetaTestPhoneNumber $phone, MetaTestMessage $target, string $emoji): MetaTestMessage
+    {
+        $connection = $phone->waba->connection;
+        if (!$connection || !$target->meta_message_id) {
+            throw new MetaTestApiException('Cannot react to this message.', 400);
+        }
+
+        $to = $target->direction === MetaTestMessage::DIRECTION_INCOMING
+            ? $target->from_phone
+            : $target->to_phone;
+
+        // An existing outgoing reaction on the same target replaces itself —
+        // remove the older local row so the UI shows only the latest emoji.
+        MetaTestMessage::where('user_id', $phone->user_id)
+            ->where('message_type', 'reaction')
+            ->where('direction', MetaTestMessage::DIRECTION_OUTGOING)
+            ->where('reply_to_id', $target->id)
+            ->delete();
+
+        $result = $this->client->request(
+            'POST',
+            "/{$phone->meta_phone_number_id}/messages",
+            [
+                'messaging_product' => 'whatsapp',
+                'recipient_type' => 'individual',
+                'to' => $this->normalizePhone($to),
+                'type' => 'reaction',
+                'reaction' => [
+                    'message_id' => $target->meta_message_id,
+                    'emoji' => $emoji,
+                ],
+            ],
+            $connection->access_token
+        );
+
+        return MetaTestMessage::create([
+            'user_id' => $phone->user_id,
+            'api_key_id' => $this->apiKeyId,
+            'phone_number_id' => $phone->id,
+            'meta_message_id' => $result['messages'][0]['id'] ?? null,
+            'direction' => MetaTestMessage::DIRECTION_OUTGOING,
+            'from_phone' => $phone->phone_number,
+            'to_phone' => $this->normalizePhone($to),
+            'body' => $emoji,
+            'message_type' => 'reaction',
+            'reply_to_id' => $target->id,
+            'raw_payload' => $result,
+            'status' => MetaTestMessage::STATUS_SENT,
+            'sent_at' => now(),
+        ]);
+    }
+
+    /**
+     * Show the customer a typing indicator. Meta requires anchoring it to the
+     * customer's last message, so we piggyback on a read receipt.
+     */
+    public function sendTypingIndicator(MetaTestPhoneNumber $phone, string $peer): void
+    {
+        $connection = $phone->waba->connection;
+        if (!$connection) {
+            return;
+        }
+
+        $lastIncoming = MetaTestMessage::where('user_id', $phone->user_id)
+            ->where('direction', MetaTestMessage::DIRECTION_INCOMING)
+            ->where('from_phone', $this->normalizePhone($peer))
+            ->whereNotNull('meta_message_id')
+            ->latest('id')
+            ->first();
+
+        if (!$lastIncoming) {
+            return;
+        }
+
+        try {
+            $this->client->request(
+                'POST',
+                "/{$phone->meta_phone_number_id}/messages",
+                [
+                    'messaging_product' => 'whatsapp',
+                    'status' => 'read',
+                    'message_id' => $lastIncoming->meta_message_id,
+                    'typing_indicator' => ['type' => 'text'],
+                ],
+                $connection->access_token
+            );
+        } catch (\Throwable $e) {
+            Log::debug('MetaTest: typing indicator failed: ' . $e->getMessage());
         }
     }
 
@@ -370,6 +478,19 @@ class MetaTestMessagingService
 
         $body = '';
         $type = $messageData['type'] ?? 'unknown';
+        $replyToId = null;
+
+        // Quoted replies carry context.id = wamid of the original message.
+        $contextWamid = $messageData['context']['id'] ?? null;
+        // Emoji reactions reference their target via reaction.message_id and
+        // the emoji itself lives in reaction.emoji ('' = reaction removed).
+        if ($type === 'reaction') {
+            $contextWamid = $messageData['reaction']['message_id'] ?? null;
+            $body = $messageData['reaction']['emoji'] ?? '';
+        }
+        if ($contextWamid) {
+            $replyToId = MetaTestMessage::where('meta_message_id', $contextWamid)->value('id');
+        }
 
         if ($type === 'text') {
             $body = $messageData['text']['body'] ?? '';
@@ -377,6 +498,17 @@ class MetaTestMessagingService
             $body = $messageData[$type]['caption'];
         } elseif ($type === 'button') {
             $body = $messageData['button']['text'] ?? '';
+        }
+
+        // A removed reaction (empty emoji) wipes the earlier reaction row
+        // from the same sender on the same target instead of adding a row.
+        if ($type === 'reaction' && $body === '' && $replyToId) {
+            MetaTestMessage::where('message_type', 'reaction')
+                ->where('reply_to_id', $replyToId)
+                ->where('from_phone', $this->normalizePhone($from))
+                ->delete();
+
+            return null;
         }
 
         $message = MetaTestMessage::create([
@@ -388,6 +520,7 @@ class MetaTestMessagingService
             'to_phone' => $phone->phone_number,
             'body' => $body,
             'message_type' => $type,
+            'reply_to_id' => $replyToId,
             'raw_payload' => $messageData,
             'status' => MetaTestMessage::STATUS_RECEIVED,
         ]);
