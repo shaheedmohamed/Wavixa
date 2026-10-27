@@ -18,6 +18,7 @@ class WhatsAppMessage extends Model
         'campaign_recipient_id',
         'from',
         'to',
+        'sender_name',
         'message',
         'media_url',
         'media_meta',

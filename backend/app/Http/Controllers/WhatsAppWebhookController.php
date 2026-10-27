@@ -822,6 +822,7 @@ class WhatsAppWebhookController extends Controller
                             'conversation_id' => $conversation->id,
                             'from' => $sender,
                             'to' => $fromMe ? ($m['remoteJid'] ? preg_replace('/\D/', '', explode('@', $m['remoteJid'])[0]) : $phone) : $session->phone_number,
+                            'sender_name' => ($isGroup && !$fromMe) ? ($m['pushName'] ?? null) : null,
                             'message' => $m['body'] ?? '',
                             'media_meta' => $mediaMeta,
                             'media_mime_type' => $m['media']['mimetype'] ?? null,
@@ -1090,6 +1091,9 @@ class WhatsAppWebhookController extends Controller
                     'conversation_id' => $conversation->id,
                     'from' => $fromMe ? $session->phone_number : $senderPhone,
                     'to' => $fromMe ? $contactPhone : $session->phone_number,
+                    // Group sender's pushname — the bubble label prefers the
+                    // owner's saved contact name, resolved at read time.
+                    'sender_name' => ($isGroup && !$fromMe) ? $senderName : null,
                     'message' => $body,
                     'media_mime_type' => $data['mimeType'] ?? null,
                     'message_type' => $messageType,
