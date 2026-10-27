@@ -59,6 +59,7 @@ Route::middleware(['api', HandleCors::class])->group(function () {
         Route::post('/whatsapp/message-reaction', [\App\Http\Controllers\WhatsAppWebhookController::class, 'messageReaction']);
         Route::post('/whatsapp/message-revoked', [\App\Http\Controllers\WhatsAppWebhookController::class, 'messageRevoked']);
         Route::post('/whatsapp/history-sync', [\App\Http\Controllers\WhatsAppWebhookController::class, 'historySync']);
+        Route::post('/whatsapp/contacts-sync', [\App\Http\Controllers\WhatsAppWebhookController::class, 'contactsSync']);
         Route::post('/whatsapp/message-media', [\App\Http\Controllers\WhatsAppWebhookController::class, 'messageMedia']);
         Route::post('/whatsapp/chatstate', [\App\Http\Controllers\WhatsAppWebhookController::class, 'chatstate']);
 

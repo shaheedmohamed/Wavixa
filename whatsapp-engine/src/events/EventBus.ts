@@ -17,6 +17,7 @@ export type EngineEvent =
   | 'sync.started'
   | 'sync.completed'
   | 'history.sync'
+  | 'contacts.sync'
   | 'device.logged_out';
 
 export interface WebhookEventPayload {

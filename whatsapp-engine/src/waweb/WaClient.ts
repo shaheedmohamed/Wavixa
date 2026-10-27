@@ -39,6 +39,7 @@ import {
   xmppSignedPreKey,
 } from './WaPayloads.js';
 import { generateWaKeyPair, BufferJSON, type WaCreds } from './WaCreds.js';
+import { AppStateProcessor } from './AppStateProcessor.js';
 import { MediaManager, type MediaType } from '../message/MediaManager.js';
 import {
   normalizeMessageContent,
@@ -88,6 +89,9 @@ export interface WaClientEvents {
     raw: unknown;
   }) => void;
   'history.sync': (payload: ParsedHistorySync) => void;
+  'contacts.sync': (payload: {
+    contacts: Array<{ jid: string; name: string; firstName?: string }>;
+  }) => void;
   'message.revoked': (revoke: {
     jid: string;
     messageId: string;
@@ -461,6 +465,19 @@ export class WaClient extends EventEmitter {
               void this.handleHistorySyncNotification(protocol.historySyncNotification);
               continue;
             }
+            // The primary pushes the keys that decrypt the owner's address
+            // book (ContactAction mutations in the app-state collections).
+            if (protocol?.appStateSyncKeyShare) {
+              void this.handleAppStateKeyShare(protocol.appStateSyncKeyShare).catch((e) =>
+                logger.debug({ err: e }, 'app-state key share handling failed'),
+              );
+              continue;
+            }
+            // Our app-state is declared corrupt/stale server-side — re-pull.
+            if (protocol?.appStateFatalExceptionNotification) {
+              void this.resyncAppState().catch(() => undefined);
+              continue;
+            }
             // "Delete for everyone" arrives as protocolMessage{type: REVOKE,
             // key: <the deleted message's key>}. Surface it so Laravel can
             // flag the row instead of deleting it (anti-delete).
@@ -627,7 +644,15 @@ export class WaClient extends EventEmitter {
         this.emit('stanza', node);
         break;
 
-      case 'notification':
+      case 'notification': {
+        // Pushed app-state deltas (contact saved on the phone, pin/mute…)
+        // arrive as <notification><collection> outside the dirty→resync path.
+        if (getBinaryNodeChildren(node, 'collection').length) {
+          void this.processAppStateResult(node).catch(() => undefined);
+        }
+        this.emit('stanza', node);
+        break;
+      }
       case 'call':
       case 'ack':
       case 'presence':
@@ -1305,8 +1330,9 @@ export class WaClient extends EventEmitter {
    * Issue the app-state collection handshake WhatsApp Web performs on
    * connect. The server only marks a companion 'synced' — and starts
    * pushing live messages instead of queueing them for reconnect — once
-   * the collections have been requested. Patch payloads are encrypted
-   * app-state data we do not persist; requesting them is what matters.
+   * the collections have been requested. The returned patches also carry
+   * the owner's address book (encrypted ContactAction mutations), so the
+   * result is decoded into a 'contacts.sync' event.
    */
   private resyncAppState(): Promise<BinaryNode> {
     const collections = [
@@ -1329,6 +1355,83 @@ export class WaClient extends EventEmitter {
           })),
         },
       ],
+    }).then((result) => {
+      void this.processAppStateResult(result).catch((err) =>
+        logger.warn({ err }, 'app-state collection decode failed'),
+      );
+      return result;
+    });
+  }
+
+  /**
+   * Persist the app-state keys the primary shares, then re-pull the
+   * collections — mutations that previously lacked a key now decrypt.
+   */
+  private async handleAppStateKeyShare(share: {
+    keys?: Array<{
+      keyId?: { keyId?: Buffer | Uint8Array };
+      keyData?: { keyData?: Buffer | Uint8Array };
+    }>;
+  }): Promise<void> {
+    const keys = share?.keys || [];
+    if (!keys.length) return;
+
+    this.creds.appStateKeys = this.creds.appStateKeys || {};
+    let added = 0;
+    for (const k of keys) {
+      const id = k?.keyId?.keyId;
+      const data = k?.keyData?.keyData;
+      if (!id || !data) continue;
+      const idB64 = Buffer.from(id).toString('base64');
+      if (!this.creds.appStateKeys[idB64]) added++;
+      this.creds.appStateKeys[idB64] = Buffer.from(data).toString('base64');
+    }
+    this.saveCreds();
+    logger.info({ shared: keys.length, added }, 'App-state sync keys stored');
+    if (added > 0) {
+      void this.resyncAppState().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Decode the app-state sync result: pull every ContactAction mutation,
+   * emit 'contacts.sync' for Laravel, and ask the primary for any keys we
+   * still lack (its share arrives asynchronously and re-triggers a resync).
+   */
+  private async processAppStateResult(result: BinaryNode): Promise<void> {
+    const records = await AppStateProcessor.collectRecords(result);
+    if (!records.length) return;
+
+    const keyMap = new Map<string, Buffer>();
+    for (const [id, b64] of Object.entries(this.creds.appStateKeys || {})) {
+      try {
+        keyMap.set(id, Buffer.from(b64, 'base64'));
+      } catch {
+        /* malformed stored key — skip */
+      }
+    }
+
+    const { contacts, missingKeyIds } = await AppStateProcessor.extractContacts(records, keyMap);
+    if (contacts.length) {
+      this.emit('contacts.sync', { contacts });
+      logger.info({ contacts: contacts.length, records: records.length }, 'app-state contacts decoded');
+    }
+    if (missingKeyIds.length && this.creds.me) {
+      await this.requestAppStateKeys(missingKeyIds.map((b64) => Buffer.from(b64, 'base64'))).catch(
+        (err) => logger.debug({ err, missing: missingKeyIds.length }, 'app-state key request failed'),
+      );
+    }
+  }
+
+  /**
+   * Ask the primary phone to share the app-state keys we are missing —
+   * APP_STATE_SYNC_KEY_REQUEST peer protocol message to own devices.
+   */
+  private async requestAppStateKeys(keyIds: Buffer[]): Promise<void> {
+    if (!keyIds.length) return;
+    await this.sendPeerProtocolMessage({
+      appStateSyncKeyRequest: { keyIds: keyIds.map((keyId) => ({ keyId })) },
+      type: 7, // APP_STATE_SYNC_KEY_REQUEST
     });
   }
 
@@ -2062,13 +2165,12 @@ export class WaClient extends EventEmitter {
   }
 
   /**
-   * Send a peer-data-operation protocol message to our own account. This is
-   * how a companion asks the primary phone for history syncs, app-state
-   * resends and similar peer traffic — encrypted for every OTHER device on
-   * the account (the primary phone among them).
+   * Send a protocol message to our own account. This is how a companion asks
+   * the primary phone for history syncs, app-state key shares, message
+   * resends and similar peer traffic — encrypted for the primary device.
    */
-  private async sendPeerDataOperation(
-    pdoMessage: Record<string, unknown>,
+  private async sendPeerProtocolMessage(
+    protocolMessage: Record<string, unknown>,
   ): Promise<{ id: string }> {
     if (!this.creds.me) {
       throw new Error('Not authenticated — pair the device first');
@@ -2079,13 +2181,7 @@ export class WaClient extends EventEmitter {
     const meLid = this.creds.me.lid;
     const meLidUser = meLid ? jidDecode(meLid)?.user : undefined;
 
-    const message = {
-      protocolMessage: {
-        peerDataOperationRequestMessage: pdoMessage,
-        type: 16, // PEER_DATA_OPERATION_REQUEST_MESSAGE
-      },
-    };
-    const bytes = await this.encodeWAMessage(message);
+    const bytes = await this.encodeWAMessage({ protocolMessage });
 
     // Peer messages target the primary device (device 0) directly — the
     // server does not enumerate own-account devices via usync. LID-migrated
@@ -2133,6 +2229,15 @@ export class WaClient extends EventEmitter {
       throw new Error('Failed to deliver peer data request to any own identity');
     }
     return { id: lastId };
+  }
+
+  private async sendPeerDataOperation(
+    pdoMessage: Record<string, unknown>,
+  ): Promise<{ id: string }> {
+    return this.sendPeerProtocolMessage({
+      peerDataOperationRequestMessage: pdoMessage,
+      type: 16, // PEER_DATA_OPERATION_REQUEST_MESSAGE
+    });
   }
 
   /**

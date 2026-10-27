@@ -140,7 +140,9 @@ export function createRoutes(deps: RouteDependencies): express.Router {
               (msg.jid?.endsWith('@s.whatsapp.net') ? msg.jid : msg.sender?.endsWith('@lid') ? '' : msg.sender) ||
               ''
             ).split('@')[0],
-            senderName: msg.notify,
+            // On fromMe messages the stanza's notify attr is the OWNER's
+            // pushname — never the contact's name — so leave it empty.
+            senderName: msg.fromMe ? undefined : msg.notify,
             senderLid: msg.senderLid || (msg.sender?.endsWith('@lid') ? msg.sender : undefined),
             fromMe: msg.fromMe || false,
             body,
@@ -277,6 +279,14 @@ export function createRoutes(deps: RouteDependencies): express.Router {
           session_id: sessionId,
           timestamp: Math.floor(Date.now() / 1000),
           data: bounded as unknown as Record<string, unknown>,
+        });
+      });
+      session.onContactsSync((payload) => {
+        eventBus.emit('contacts.sync', {
+          event: 'contacts.sync',
+          session_id: sessionId,
+          timestamp: Math.floor(Date.now() / 1000),
+          data: { contacts: payload.contacts },
         });
       });
       session.onConnected((info) => {

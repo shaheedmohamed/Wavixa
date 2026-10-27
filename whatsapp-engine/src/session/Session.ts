@@ -46,6 +46,9 @@ export type RevokedCallback = (revoke: {
   revoker?: string;
 }) => void;
 export type ConnectedCallback = (info: { phoneNumber?: string; name?: string }) => void;
+export type ContactsSyncCallback = (payload: {
+  contacts: Array<{ jid: string; name: string; firstName?: string }>;
+}) => void;
 export type DisconnectedCallback = (info: { reason?: string; loggedOut?: boolean }) => void;
 export type QrCallback = (qr: SessionQrState) => void;
 
@@ -84,6 +87,7 @@ export class Session {
   private qrCallbacks: QrCallback[] = [];
   private historySyncCallbacks: HistorySyncCallback[] = [];
   private revokedCallbacks: RevokedCallback[] = [];
+  private contactsSyncCallbacks: ContactsSyncCallback[] = [];
   private leaseTimer: NodeJS.Timeout | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
@@ -154,6 +158,11 @@ export class Session {
   /** Fired when a WhatsApp history-sync chunk has been downloaded and decoded. */
   public onHistorySync(callback: HistorySyncCallback): void {
     this.historySyncCallbacks.push(callback);
+  }
+
+  /** Fired when the owner's address book is decoded from app-state sync. */
+  public onContactsSync(callback: ContactsSyncCallback): void {
+    this.contactsSyncCallbacks.push(callback);
   }
 
   /**
@@ -299,6 +308,16 @@ export class Session {
 
     client.on('history.sync', (payload) => {
       for (const cb of this.historySyncCallbacks) {
+        try {
+          cb(payload);
+        } catch {
+          // isolate callback errors
+        }
+      }
+    });
+
+    client.on('contacts.sync', (payload) => {
+      for (const cb of this.contactsSyncCallbacks) {
         try {
           cb(payload);
         } catch {

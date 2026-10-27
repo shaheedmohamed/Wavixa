@@ -169,6 +169,24 @@ export class WebhookDispatcher {
       await this.dispatchUnifiedWebhook(p);
     });
 
+    // The owner's address book decoded from app-state sync — the names the
+    // user saved on their phone. Chunked like history-sync so big books
+    // stay under body limits.
+    bus.on('contacts.sync', async (p) => {
+      const contacts = Array.isArray(p.data.contacts) ? p.data.contacts : [];
+      const CHUNK = 500;
+      for (let i = 0; i < Math.max(contacts.length, 1); i += CHUNK) {
+        await this.notifyLaravel('whatsapp/contacts-sync', {
+          userId: p.session_id,
+          contacts: contacts.slice(i, i + CHUNK),
+          chunkIndex: Math.floor(i / CHUNK),
+          totalChunks: Math.max(Math.ceil(contacts.length / CHUNK), 1),
+          timestamp: p.timestamp,
+        });
+      }
+      await this.dispatchUnifiedWebhook(p);
+    });
+
     bus.on('message.reaction', async (p) => {
       await this.notifyLaravel('whatsapp/message-reaction', {
         userId: p.session_id,

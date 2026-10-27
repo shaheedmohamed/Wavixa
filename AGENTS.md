@@ -52,12 +52,14 @@ systemctl restart php8.5-fpm
 ## System WhatsApp Sender (OTP)
 
 System messages (registration OTP, password reset, subscription notices) must **only** be sent
-from the admin number `+201011679726`. This is enforced in
+from an admin-owned device — currently `+201024520482` (admin user 17, session 87; updated
+2026-10-26 after `+201011679726` lost its session entirely). This is enforced in
 `backend/app/Services/SystemWhatsAppService.php`, which matches connected sessions on the
 `system_whatsapp_phone_number` setting. There is deliberately **no fallback** to other connected
 devices: sending system OTPs through a customer's phone leaks the traffic and risks getting
 their number banned. If the admin device is offline, `sendMessage()` returns false and logs
-`sender ... is not connected, refusing to send from another device`.
+`sender ... is not connected, refusing to send from another device`, and `register()` fails
+fast with a 503 before creating the account.
 
 Matching is done on the phone number, not the session ID, because every re-pair creates a new
 `whatsapp_sessions` row with a new ID that is not in `system_whatsapp_session_ids`.
@@ -353,3 +355,48 @@ The platform's auto-reply (`/auto-reply`) is ported into the CRM at
   paid account). `google/gemini-2.5-flash` is the working default; the
   `*:free` gemma slugs hit upstream 429 rate limits often. Gemini direct API
   (`GEMINI_API_KEY`) is empty in both .env files.
+
+## Saved contact names — app-state (syncd) pipeline (2026-10-27)
+
+WhatsApp conversation names were previously the sender's **pushname**
+(`notify` stanza attr / history `Pushname`), never the owner's saved contact
+name. Saved names only travel as encrypted `SyncActionValue.ContactAction`
+(+ `lidContactAction`) mutations inside the `w:sync:app:state` collections.
+
+Engine pipeline (`whatsapp-engine`):
+
+- `WaCreds.appStateKeys` persists `keyId→keyData` (base64) pushed by the
+  primary via `protocolMessage.appStateSyncKeyShare` — `WaClient` intercepts
+  it (was previously dropped as a non-chat protocol message) and re-runs
+  `resyncAppState()` when new keys land.
+- `resyncAppState()` still requests all five collections at `version:'0'` —
+  the iq result is now decoded by `AppStateProcessor`: `<collection>` →
+  `snapshot`/`patches` → `SyncdPatch`/`SyncdSnapshot` (+ `externalMutations`
+  CDN blobs, media-HKDF info `'WhatsApp App State Keys'`, new MediaType
+  `appstate` in `MediaManager`). Each `SyncdRecord.value.blob` is
+  `[iv16 | AES-256-CBC | valueMac32]`; the value-encryption key comes from
+  `HKDF(keyData, 160, 'WhatsApp Mutation Keys')[32:64]`; plaintext is a
+  `SyncActionData` whose `index` is a JSON array (`["contact","jid"]`).
+  MACs/LTHash are NOT verified — read-only extraction.
+- Records we can't decrypt collect their `keyId` → `requestAppStateKeys()`
+  sends `protocolMessage{type:7, appStateSyncKeyRequest}` to the primary via
+  `sendPeerProtocolMessage()` (genericized out of `sendPeerDataOperation`).
+  `appStateFatalExceptionNotification` and `<notification><collection>`
+  pushes also re-trigger decode (live contact saves).
+- Emits `contacts.sync` → `Session.onContactsSync` → `routes.ts` → EventBus
+  → `WebhookDispatcher` → `POST whatsapp/contacts-sync` (500/chunk) to both
+  Laravel apps.
+- Laravel `WhatsAppWebhookController::contactsSync` (BOTH backends):
+  LID jids resolve via `whatsapp_lid_mappings`, tails match on last 10
+  digits, conversations are renamed. The CRM backend additionally upserts
+  `crm_contacts` (the existing "book wins over pushnames" table). A 404
+  "Session not found" on a foreign app's payload is expected — sessions
+  live in their own DB.
+
+### fromMe notify bug fixed (2026-10-27)
+
+For `fromMe` messages the stanza `notify` attr is the OWNER's pushname —
+it was being saved as the customer's `contact_name` (dozens of chats
+renamed to the owner's name). Engine `routes.ts` now sends
+`senderName` only when `!fromMe`, and both Laravel `messageReceived`
+handlers null it defensively.

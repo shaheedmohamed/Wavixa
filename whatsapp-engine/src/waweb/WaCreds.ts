@@ -37,6 +37,8 @@ export interface WaCreds {
   preKeys?: Record<string, IKeyPair>;
   lastAccountSyncTimestamp?: number;
   myAppStateKeyId?: string;
+  /** App-state sync keys pushed by the primary — keyId (base64) → keyData (base64). */
+  appStateKeys?: Record<string, string>;
   /** Signal double-ratchet session records, keyed by remote jid */
   signalSessions?: Record<string, unknown>;
   /** Sender-key (group/broadcast) ratchet state, keyed "groupJid::authorJid" */

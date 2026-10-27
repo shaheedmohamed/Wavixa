@@ -5,7 +5,14 @@ import path from 'path';
 import axios from 'axios';
 import { logger } from '../config/Logger.js';
 
-export type MediaType = 'image' | 'video' | 'audio' | 'document' | 'voice' | 'history';
+export type MediaType =
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'document'
+  | 'voice'
+  | 'history'
+  | 'appstate';
 
 export interface EncryptedMedia {
   ciphertext: Buffer;
@@ -23,6 +30,8 @@ export class MediaManager {
     document: 'WhatsApp Document Keys',
     voice: 'WhatsApp Audio Keys',
     history: 'WhatsApp History Keys',
+    // Encrypted ExternalBlobReference payloads offloaded by app-state patches.
+    appstate: 'WhatsApp App State Keys',
   };
 
   /**
