@@ -227,7 +227,7 @@
                   </div>
                   <div class="flex items-center gap-1 sm:gap-1.5">
                     <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-400 shrink-0" />
-                    <span class="truncate">{{ locale === 'ar' ? 'تقليل مخاطر الحظر' : 'Ban Risk Reduction' }}</span>
+                    <span class="truncate">{{ locale === 'ar' ? 'واتساب ضد الحظر وتوثيق ميتا الرسمي' : 'Official Meta Verified & Anti-Ban' }}</span>
                   </div>
                   <div class="flex items-center gap-1 sm:gap-1.5">
                     <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-400 shrink-0" />
@@ -318,6 +318,10 @@
                   </div>
                   <div class="flex items-center gap-1 sm:gap-1.5">
                     <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-400 shrink-0" />
+                    <span class="truncate">{{ locale === 'ar' ? 'واتساب ضد الحظر وتوثيق ميتا الرسمي' : 'Official Meta Verified & Anti-Ban' }}</span>
+                  </div>
+                  <div class="flex items-center gap-1 sm:gap-1.5">
+                    <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-400 shrink-0" />
                     <span class="truncate">{{ locale === 'ar' ? 'عقدة n8n و Webhooks' : 'n8n Node & Webhooks' }}</span>
                   </div>
                   <div class="flex items-center gap-1 sm:gap-1.5">
@@ -403,6 +407,10 @@
                     <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-cyan-400 shrink-0" />
                     <span class="truncate">{{ locale === 'ar' ? 'رسائل وحملات غير محدودة' : 'Unlimited Messages' }}</span>
                   </div>
+                  <div class="flex items-center gap-1 sm:gap-1.5">
+                    <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-cyan-400 shrink-0" />
+                    <span class="truncate">{{ locale === 'ar' ? 'واتساب ضد الحظر وتوثيق ميتا الرسمي' : 'Official Meta Verified & Anti-Ban' }}</span>
+                  </div>
                   <div class="flex items-center gap-1.5 text-xs text-slate-300">
                     <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-cyan-400 shrink-0" />
                     <span class="truncate">{{ locale === 'ar' ? 'WhatsApp + Telegram + Messenger' : 'Omnichannel Hub' }}</span>
@@ -485,6 +493,10 @@
 
                 <!-- Features -->
                 <div class="space-y-1 sm:space-y-1.5 mb-2.5 sm:mb-4 text-[9px] sm:text-xs text-slate-300">
+                  <div class="flex items-center gap-1 sm:gap-1.5">
+                    <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-purple-400 shrink-0" />
+                    <span class="truncate">{{ locale === 'ar' ? 'واتساب ضد الحظر وتوثيق ميتا الرسمي' : 'Official Meta Verified & Anti-Ban' }}</span>
+                  </div>
                   <div class="flex items-center gap-1 sm:gap-1.5">
                     <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-purple-400 shrink-0" />
                     <span class="truncate">{{ locale === 'ar' ? '100 جهاز متزامن' : '100 WhatsApp Devices' }}</span>

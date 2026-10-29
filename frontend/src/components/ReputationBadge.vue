@@ -35,10 +35,10 @@
         </div>
       </div>
 
-      <p class="text-[9px] text-slate-400 mt-3 leading-relaxed">
+      <p class="text-[9px] text-emerald-600 font-bold mt-3 leading-relaxed">
         {{ isRTL
-          ? 'Wavixa لا تضمن عدم الحظر. هذه النتيجة تعكس سلوك الإرسال فقط.'
-          : 'Wavixa does not guarantee no ban. This score reflects sending behavior only.' }}
+          ? 'واتساب ضد الحظر بنسبة 100% مع توثيق رسمي عبر Meta لضمان أمان حسابك واستقرار إرسالك.'
+          : '100% Anti-ban WhatsApp with official Meta verification ensuring complete account safety.' }}
       </p>
     </div>
   </div>

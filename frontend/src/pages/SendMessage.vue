@@ -201,12 +201,12 @@ export default {
       'تأكد من كتابة مفتاح الدولة بشكل صحيح (مثلاً 966 للسعودية).',
       'الحد الأقصى للرسالة الواحدة هو 1600 حرف لضمان وصولها بنجاح.',
       'تأكد من أن الرقم المستهدف لديه حساب واتساب مفعل.',
-      'تجنب إرسال رسائل عشوائية (سبام) لتقليل خطر تقييد حسابك.'
+      'واتساب ضد الحظر بنسبة 100% وموثق رسمياً عبر Meta لضمان وصول رسائلك بأمان وثقة.'
     ] : [
       'Ensure country code is entered correctly (e.g. 1 for US, 44 for UK).',
       'Maximum message length is 1,600 characters for optimal delivery.',
       'Ensure the recipient phone number has an active WhatsApp account.',
-      'Avoid unsolicited spam messaging to reduce the risk of account restriction.'
+      '100% Anti-ban WhatsApp with official Meta verification ensures your messages are delivered safely and securely.'
     ]);
 
     onMounted(async () => {

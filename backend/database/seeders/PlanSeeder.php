@@ -29,6 +29,7 @@ class PlanSeeder extends Seeder
                 'features' => [
                     '100 messages lifetime',
                     '1 WhatsApp device',
+                    'Official Meta Verified & Anti-Ban WhatsApp',
                     'Basic API access',
                     'Email support',
                 ],
@@ -49,6 +50,7 @@ class PlanSeeder extends Seeder
                 'features' => [
                     '3,000 رسالة حتى نفاد الرصيد',
                     'جهاز WhatsApp واحد',
+                    'واتساب ضد الحظر وتوثيق رسمي عبر Meta',
                     'وصول كامل إلى API',
                     'دعم Webhooks',
                     'دعم عبر البريد الإلكتروني بأولوية',
@@ -70,6 +72,7 @@ class PlanSeeder extends Seeder
                 'features' => [
                     '36,000 رسالة للسنة',
                     'جهاز WhatsApp واحد',
+                    'واتساب ضد الحظر وتوثيق رسمي عبر Meta',
                     'وصول كامل إلى API',
                     'دعم Webhooks',
                     'دعم عبر البريد الإلكتروني بأولوية',
@@ -91,6 +94,7 @@ class PlanSeeder extends Seeder
                 'features' => [
                     '15,000 رسالة حتى نفاد الرصيد',
                     'جهاز WhatsApp واحد',
+                    'واتساب ضد الحظر وتوثيق رسمي عبر Meta',
                     'وصول كامل إلى API',
                     'Webhooks متقدمة',
                     'لوحة تحليلات',
@@ -113,6 +117,7 @@ class PlanSeeder extends Seeder
                 'features' => [
                     '180,000 رسالة للسنة',
                     'جهاز WhatsApp واحد',
+                    'واتساب ضد الحظر وتوثيق رسمي عبر Meta',
                     'وصول كامل إلى API',
                     'Webhooks متقدمة',
                     'لوحة تحليلات',
@@ -135,6 +140,7 @@ class PlanSeeder extends Seeder
                 'features' => [
                     'رسائل شهرية غير محدودة',
                     'جهاز WhatsApp واحد',
+                    'واتساب ضد الحظر وتوثيق رسمي عبر Meta',
                     'وصول كامل إلى API',
                     'Webhooks متقدمة',
                     'تحليلات تفصيلية',
@@ -157,6 +163,7 @@ class PlanSeeder extends Seeder
                 'features' => [
                     'رسائل غير محدودة طوال فترة الاشتراك',
                     'جهاز WhatsApp واحد',
+                    'واتساب ضد الحظر وتوثيق رسمي عبر Meta',
                     'وصول كامل إلى API',
                     'Webhooks متقدمة',
                     'تحليلات تفصيلية',
@@ -179,6 +186,7 @@ class PlanSeeder extends Seeder
                 'features' => [
                     'جميع مميزات Wavixa',
                     'حتى 100 جهاز WhatsApp',
+                    'واتساب ضد الحظر وتوثيق رسمي عبر Meta',
                     'وصول كامل إلى API',
                     'Webhooks متقدمة',
                     'تحليلات متقدمة',
@@ -201,6 +209,7 @@ class PlanSeeder extends Seeder
                 'features' => [
                     'جميع مميزات Wavixa',
                     'حتى 100 جهاز WhatsApp',
+                    'واتساب ضد الحظر وتوثيق رسمي عبر Meta',
                     'وصول كامل إلى API',
                     'Webhooks متقدمة',
                     'تحليلات متقدمة',

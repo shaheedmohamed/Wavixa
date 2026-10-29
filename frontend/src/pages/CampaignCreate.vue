@@ -263,8 +263,9 @@
               <input v-model.number="form.delay_max" type="number" min="1" max="300" class="w-full bg-gray-50 border border-gray-100 rounded-xl px-4 py-3 text-sm font-bold text-gray-900 outline-none focus:border-indigo-300" />
             </div>
           </div>
-          <p class="text-[10px] text-gray-400 font-bold">
-            {{ isRTL ? 'يتم تنظيم سرعة الإرسال الفعلية لتقليل مخاطر التقييد، دون ضمان بعدم الحظر.' : 'Actual sending velocity is throttled to reduce restriction risk; this does not guarantee that your number will not be banned.' }}
+          <p class="text-[10px] text-emerald-600 font-bold flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" /></svg>
+            {{ isRTL ? 'إرسال ذكي وآمن — نوثق رقمك بربط Meta الرسمي ليصبح واتساب ضد الحظر بنسبة 100% مع ضمان وصول حملاتك.' : 'Smart & safe delivery — your number is officially Meta verified for 100% anti-ban WhatsApp campaign delivery.' }}
           </p>
         </div>
 

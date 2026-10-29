@@ -147,6 +147,16 @@ to `wavixa-engine.service` — the custom protocol engine in `whatsapp-engine/` 
 `npm run build` -> `dist/`). The older `whatsapp-service` (whatsapp-web.js, port 3002)
 still runs but is not on the send path.
 
+The engine delivers webhooks over **loopback HTTP**: `LARAVEL_API_URL=http://127.0.0.1:8089/api`
+(local vhost `/etc/nginx/sites-available/wavixa-internal` -> `/var/www/Wavixa/backend/public`)
+plus `LARAVEL_API_URLS_EXTRA=http://127.0.0.1:8088/api` (CRM backend) and
+`LARAVEL_WEBHOOK_TIMEOUT_MS=30000`. It used to post to `https://wavixa.net/api` over the
+public internet — 240 KB history-sync chunks routinely exceeded the 8 s axios timeout,
+arrived at Laravel truncated (body_len < Content-Length), failed HMAC verification, and
+fired false-positive `invalid_service_signature` critical fraud alerts while silently
+dropping history chunks. Keep webhooks on loopback; never repoint them at the public
+domain.
+
 ### Call bridge dial flow (2026-10) — WA Web removed per-chat call buttons
 
 WhatsApp Web no longer renders "Voice call"/"Video call" icons in the chat

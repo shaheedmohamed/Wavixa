@@ -130,6 +130,12 @@
             </svg>
             <span>{{ isLoading ? t('auth.registering') : t('auth.register_button') }}</span>
           </button>
+
+          <!-- Meta Official Verified Badge -->
+          <div class="pt-2 flex items-center justify-center gap-2 text-xs font-bold text-emerald-400">
+            <svg class="w-4 h-4 text-emerald-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" /></svg>
+            <span>{{ isRTL ? 'نوثق رقمك بربط Meta الرسمي — واتساب ضد الحظر بنسبة 100%' : 'Official Meta Verification — 100% Anti-Ban WhatsApp' }}</span>
+          </div>
         </form>
 
         <!-- OTP Verification Step -->

@@ -420,6 +420,10 @@ export default {
           ),
         },
         {
+          label: isRTL.value ? 'حماية ضد الحظر وتوثيق Meta' : 'Anti-Ban & Meta Verification',
+          values: planGroups.value.map(() => isRTL.value ? 'موثق رسمياً ضد الحظر 100%' : '100% Meta Verified & Anti-Ban'),
+        },
+        {
           label: isRTL.value ? 'نوع الباقة' : 'Plan Type',
           values: planGroups.value.map(g => g.isMessageCredit ? (isRTL.value ? 'رصيد رسائل' : 'Message Credit') : (isRTL.value ? 'اشتراك' : 'Subscription')),
         },
@@ -444,17 +448,18 @@ export default {
       if (!isRTL.value) {
         const mapEn = {
           starter: isYearlyValue
-            ? ['36,000 messages / year', '1 WhatsApp session', 'Full API access', 'Webhook callbacks', 'Priority email support']
-            : ['3,000 message credits (never expire)', '1 WhatsApp session', 'Full API access', 'Webhook callbacks', 'Priority email support'],
+            ? ['36,000 messages / year', '1 WhatsApp session', 'Official Meta Verified & Anti-Ban WhatsApp', 'Full API access', 'Webhook callbacks', 'Priority email support']
+            : ['3,000 message credits (never expire)', '1 WhatsApp session', 'Official Meta Verified & Anti-Ban WhatsApp', 'Full API access', 'Webhook callbacks', 'Priority email support'],
           pro: isYearlyValue
-            ? ['180,000 messages / year', '1 WhatsApp session', 'Full API access', 'Advanced webhooks', 'Analytics dashboard', '24/7 Priority support']
-            : ['15,000 message credits (never expire)', '1 WhatsApp session', 'Full API access', 'Advanced webhooks', 'Analytics dashboard', '24/7 Priority support'],
+            ? ['180,000 messages / year', '1 WhatsApp session', 'Official Meta Verified & Anti-Ban WhatsApp', 'Full API access', 'Advanced webhooks', 'Analytics dashboard', '24/7 Priority support']
+            : ['15,000 message credits (never expire)', '1 WhatsApp session', 'Official Meta Verified & Anti-Ban WhatsApp', 'Full API access', 'Advanced webhooks', 'Analytics dashboard', '24/7 Priority support'],
           business: isYearlyValue
-            ? ['Unlimited annual messages', '1 WhatsApp session', 'Full API access', 'Advanced webhooks', 'Detailed analytics', 'Dedicated VIP support']
-            : ['Unlimited monthly messages', '1 WhatsApp session', 'Full API access', 'Advanced webhooks', 'Detailed analytics', 'Dedicated VIP support'],
+            ? ['Unlimited annual messages', '1 WhatsApp session', 'Official Meta Verified & Anti-Ban WhatsApp', 'Full API access', 'Advanced webhooks', 'Detailed analytics', 'Dedicated VIP support']
+            : ['Unlimited monthly messages', '1 WhatsApp session', 'Official Meta Verified & Anti-Ban WhatsApp', 'Full API access', 'Advanced webhooks', 'Detailed analytics', 'Dedicated VIP support'],
           partners: [
             'All Wavixa features',
             'Up to 100 WhatsApp sessions',
+            'Official Meta Verified & Anti-Ban WhatsApp',
             'Full API access',
             'Advanced webhooks',
             'Multi-tenant analytics',
@@ -465,17 +470,18 @@ export default {
       }
       const map = {
         starter: isYearlyValue
-          ? ['36,000 رسالة للسنة', 'جهاز WhatsApp واحد', 'وصول كامل إلى API', 'دعم Webhooks', 'دعم عبر البريد الإلكتروني بأولوية']
-          : ['3,000 رسالة حتى نفاد الرصيد', 'جهاز WhatsApp واحد', 'وصول كامل إلى API', 'دعم Webhooks', 'دعم عبر البريد الإلكتروني بأولوية'],
+          ? ['36,000 رسالة للسنة', 'جهاز WhatsApp واحد', 'واتساب ضد الحظر وتوثيق رسمي عبر Meta', 'وصول كامل إلى API', 'دعم Webhooks', 'دعم عبر البريد الإلكتروني بأولوية']
+          : ['3,000 رسالة حتى نفاد الرصيد', 'جهاز WhatsApp واحد', 'واتساب ضد الحظر وتوثيق رسمي عبر Meta', 'وصول كامل إلى API', 'دعم Webhooks', 'دعم عبر البريد الإلكتروني بأولوية'],
         pro: isYearlyValue
-          ? ['180,000 رسالة للسنة', 'جهاز WhatsApp واحد', 'وصول كامل إلى API', 'Webhooks متقدمة', 'لوحة تحليلات', 'دعم 24/7']
-          : ['15,000 رسالة حتى نفاد الرصيد', 'جهاز WhatsApp واحد', 'وصول كامل إلى API', 'Webhooks متقدمة', 'لوحة تحليلات', 'دعم 24/7'],
+          ? ['180,000 رسالة للسنة', 'جهاز WhatsApp واحد', 'واتساب ضد الحظر وتوثيق رسمي عبر Meta', 'وصول كامل إلى API', 'Webhooks متقدمة', 'لوحة تحليلات', 'دعم 24/7']
+          : ['15,000 رسالة حتى نفاد الرصيد', 'جهاز WhatsApp واحد', 'واتساب ضد الحظر وتوثيق رسمي عبر Meta', 'وصول كامل إلى API', 'Webhooks متقدمة', 'لوحة تحليلات', 'دعم 24/7'],
         business: isYearlyValue
-          ? ['رسائل غير محدودة طوال فترة الاشتراك', 'جهاز WhatsApp واحد', 'وصول كامل إلى API', 'Webhooks متقدمة', 'تحليلات تفصيلية', 'دعم مخصص']
-          : ['رسائل شهرية غير محدودة', 'جهاز WhatsApp واحد', 'وصول كامل إلى API', 'Webhooks متقدمة', 'تحليلات تفصيلية', 'دعم مخصص'],
+          ? ['رسائل غير محدودة طوال فترة الاشتراك', 'جهاز WhatsApp واحد', 'واتساب ضد الحظر وتوثيق رسمي عبر Meta', 'وصول كامل إلى API', 'Webhooks متقدمة', 'تحليلات تفصيلية', 'دعم مخصص']
+          : ['رسائل شهرية غير محدودة', 'جهاز WhatsApp واحد', 'واتساب ضد الحظر وتوثيق رسمي عبر Meta', 'وصول كامل إلى API', 'Webhooks متقدمة', 'تحليلات تفصيلية', 'دعم مخصص'],
         partners: [
           'جميع مميزات Wavixa',
           'حتى 100 جهاز WhatsApp',
+          'واتساب ضد الحظر وتوثيق رسمي عبر Meta',
           'وصول كامل إلى API',
           'Webhooks متقدمة',
           'تحليلات متقدمة',
@@ -486,6 +492,10 @@ export default {
     };
 
     const faqList = computed(() => isRTL.value ? [
+      {
+        question: 'هل الواتساب في باقات Wavixa ضد الحظر؟',
+        answer: 'نعم، الواتساب مع Wavixa آمن تماماً وضد الحظر بنسبة 100%؛ حيث نوثق رقمك ونربطه رسمياً عبر Meta Cloud API، مما يمنحه اعتماداً وموثوقية رسمية تمنع الحظر نهائياً.',
+      },
       {
         question: 'هل رسائل Starter وPro تنتهي بنهاية الشهر؟',
         answer: 'لا. الرسائل لا تنتهي بنهاية الشهر. تستمر الباقة حتى يتم استهلاك رصيد الرسائل.',
@@ -515,6 +525,10 @@ export default {
         answer: 'تواصل معنا على +20 101 167 9726 لتفعيل الخطة فوراً.',
       },
     ] : [
+      {
+        question: 'Is WhatsApp anti-ban and how is the number verified?',
+        answer: 'Yes, WhatsApp on Wavixa is 100% anti-ban! We officially verify and link your number via Meta Cloud API, granting official trust and preventing bans.',
+      },
       {
         question: 'Do Starter and Pro message credits expire at month end?',
         answer: 'No. Message credits carry over and remain valid until completely consumed.',

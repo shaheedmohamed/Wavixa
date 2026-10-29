@@ -108,10 +108,10 @@ function sendDemoMessage(quickText = null) {
       reply = locale.value === 'ar'
         ? 'باقاتنا تبدأ من 0$ للتجربة المجانية، مع باقات احترافية للمؤسسات تشمل أجهزة غير محدودة و API متكامل 💎'
         : 'Plans start at $0 for Free Trial, with Pro & Unlimited options including full API access & multi-devices 💎';
-    } else if (text.toLowerCase().includes('ban') || text.includes('حظر') || text.includes('أمان')) {
+    } else if (text.toLowerCase().includes('ban') || text.includes('حظر') || text.includes('أمان') || text.includes('meta') || text.includes('ميتا')) {
       reply = locale.value === 'ar'
-        ? 'Wavixa لا تضمن عدم تعرض الرقم للحظر، لكن النظام مصمم لتقليل السلوكيات التي قد تؤدي إلى تقييد الرقم، ويجب استخدامه وفق سياسات WhatsApp.'
-        : 'Wavixa does not guarantee that your number will not be banned. The system is designed to reduce behaviors that may lead to restriction, and must be used in accordance with WhatsApp policies.';
+        ? 'نوثق رقمك مباشرة عبر Meta الرسمي، لذلك الواتساب مع Wavixa آمن تماماً وضد الحظر بنسبة 100%! يمكنك إرسال حملاتك بأمان تام وموثوقية رسمية معتمدة من ميتا 🛡️'
+        : 'We officially verify your number directly with Meta, making your WhatsApp 100% safe and anti-ban! Send your campaigns with complete confidence and official Meta reliability 🛡️';
     }
     
     activeDemoList.value.push({
@@ -154,7 +154,7 @@ const fallbackPlans = [
     slug: 'free',
     price: '0',
     description: 'لتجربة المنصة واستكشاف الإمكانيات والربط البرمجي',
-    features: ['100 رسالة تجريبية', 'ربط جهاز واتساب واحد', 'لوحة تحكم أساسية', 'مفاتيح API & Webhooks', 'دعم فني عبر الشات'],
+    features: ['100 رسالة تجريبية', 'ربط جهاز واتساب واحد', 'لوحة تحكم أساسية', 'مفاتيح API & Webhooks', 'واتساب ضد الحظر وتوثيق Meta الرسمي', 'دعم فني عبر الشات'],
     is_free: true,
   },
   {
@@ -162,7 +162,7 @@ const fallbackPlans = [
     slug: 'pro',
     price: '19',
     description: 'الأفضل للمتاجر والشركات الناشئة لزيادة المبيعات والأتمتة',
-    features: ['15,000 رسالة شهرياً', 'حتى 5 أجهزة وجلسات متزامنة', 'رد تلقائي بالذكاء الاصطناعي (AI مكانك)', 'حملات تسويقية مجدولة وذكية', 'تكامل n8n و Webhooks كامل', 'تقليل ذكي لمخاطر الحظر'],
+    features: ['15,000 رسالة شهرياً', 'حتى 5 أجهزة وجلسات متزامنة', 'رد تلقائي بالذكاء الاصطناعي (AI مكانك)', 'حملات تسويقية مجدولة وذكية', 'تكامل n8n و Webhooks كامل', 'واتساب ضد الحظر وتوثيق Meta الرسمي'],
     is_popular: true,
   },
   {
@@ -170,7 +170,7 @@ const fallbackPlans = [
     slug: 'business',
     price: '49',
     description: 'حلول غير محدودة للشركات الكبرى والوكالات التسويقية',
-    features: ['رسائل غير محدودة بدون قيود', 'أجهزة وجلسات متعددة غير محدودة', 'تكامل شامل: WhatsApp + Telegram + Messenger', 'دعم إعلانات Meta Ads المباشرة', 'أولوية قصوى في طابور الإرسال', 'مدير حساب ودعم فني مخصص 24/7'],
+    features: ['رسائل غير محدودة بدون قيود', 'أجهزة وجلسات متعددة غير محدودة', 'تكامل شامل: WhatsApp + Telegram + Messenger', 'دعم إعلانات Meta Ads المباشرة', 'واتساب ضد الحظر وتوثيق Meta الرسمي', 'أولوية قصوى في طابور الإرسال', 'مدير حساب ودعم فني مخصص 24/7'],
   },
 ];
 
@@ -869,7 +869,7 @@ onUnmounted(() => {
                     </div>
                     <div class="flex items-center gap-1 sm:gap-1.5">
                       <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-400 shrink-0" />
-                      <span class="truncate">{{ locale === 'ar' ? 'تقليل مخاطر الحظر' : 'Ban Risk Reduction' }}</span>
+                      <span class="truncate">{{ locale === 'ar' ? 'واتساب ضد الحظر وتوثيق ميتا الرسمي' : 'Official Meta Verified & Anti-Ban' }}</span>
                     </div>
                     <div class="flex items-center gap-1 sm:gap-1.5">
                       <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-400 shrink-0" />
@@ -960,6 +960,10 @@ onUnmounted(() => {
                     </div>
                     <div class="flex items-center gap-1 sm:gap-1.5">
                       <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-400 shrink-0" />
+                      <span class="truncate">{{ locale === 'ar' ? 'واتساب ضد الحظر وتوثيق ميتا الرسمي' : 'Official Meta Verified & Anti-Ban' }}</span>
+                    </div>
+                    <div class="flex items-center gap-1 sm:gap-1.5">
+                      <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-emerald-400 shrink-0" />
                       <span class="truncate">{{ locale === 'ar' ? 'عقدة n8n و Webhooks' : 'n8n Node & Webhooks' }}</span>
                     </div>
                     <div class="flex items-center gap-1 sm:gap-1.5">
@@ -1047,6 +1051,10 @@ onUnmounted(() => {
                     </div>
                     <div class="flex items-center gap-1 sm:gap-1.5">
                       <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-cyan-400 shrink-0" />
+                      <span class="truncate">{{ locale === 'ar' ? 'واتساب ضد الحظر وتوثيق ميتا الرسمي' : 'Official Meta Verified & Anti-Ban' }}</span>
+                    </div>
+                    <div class="flex items-center gap-1 sm:gap-1.5">
+                      <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-cyan-400 shrink-0" />
                       <span class="truncate">{{ locale === 'ar' ? 'WhatsApp + Telegram + Messenger' : 'Omnichannel Hub' }}</span>
                     </div>
                     <div class="flex items-center gap-1 sm:gap-1.5">
@@ -1127,6 +1135,10 @@ onUnmounted(() => {
 
                   <!-- Features -->
                   <div class="space-y-1 sm:space-y-1.5 mb-2.5 sm:mb-4 text-[9px] sm:text-xs text-slate-300">
+                    <div class="flex items-center gap-1 sm:gap-1.5">
+                      <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-purple-400 shrink-0" />
+                      <span class="truncate">{{ locale === 'ar' ? 'واتساب ضد الحظر وتوثيق ميتا الرسمي' : 'Official Meta Verified & Anti-Ban' }}</span>
+                    </div>
                     <div class="flex items-center gap-1 sm:gap-1.5">
                       <Check class="w-3 h-3 sm:w-3.5 sm:h-3.5 text-purple-400 shrink-0" />
                       <span class="truncate">{{ locale === 'ar' ? '100 جهاز متزامن' : '100 WhatsApp Devices' }}</span>

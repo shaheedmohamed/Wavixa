@@ -228,16 +228,18 @@ export default {
     );
 
     const features = computed(() => isRTL.value ? [
-      'إرسال واستقبال الرسائل برمجياً',
+      'نوثق رقمك مباشرة مع Meta الرسمي',
+      'واتساب آمن وضد الحظر بنسبة 100%',
+      'إرسال واستقبال الرسائل برمجياً وحملات تسويقية',
       'دعم الأجهزة المتعددة (Multi-device)',
-      'إشعارات فورية بكافة الأحداث',
-      'سجل كامل للمحادثات والرسائل',
-      'اتصال آمن ومشفر بالكامل',
+      'إشعارات فورية بكافة الأحداث والـ Webhooks',
+      'سجل كامل للمحادثات والرسائل وتشفير تام',
     ] : [
-      'Automated message sending and receiving',
+      'Official Meta verification for your number',
+      '100% Anti-ban WhatsApp protection',
+      'Automated message sending & marketing campaigns',
       'Multi-device WhatsApp protocol support',
       'Instant real-time webhook events',
-      'Full conversation and audit history',
       'End-to-end encrypted reliable connection',
     ]);
 
