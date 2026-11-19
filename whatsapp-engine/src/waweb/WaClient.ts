@@ -39,7 +39,12 @@ import {
   xmppSignedPreKey,
 } from './WaPayloads.js';
 import { generateWaKeyPair, BufferJSON, type WaCreds } from './WaCreds.js';
-import { AppStateProcessor } from './AppStateProcessor.js';
+import {
+  AppStateProcessor,
+  CollectionState,
+  FlatRecord,
+  OutgoingMutation,
+} from './AppStateProcessor.js';
 import { MediaManager, type MediaType } from '../message/MediaManager.js';
 import {
   normalizeMessageContent,
@@ -86,8 +91,16 @@ export interface WaClientEvents {
     quotedMessageId?: string;
     quotedParticipant?: string;
     isForwarded?: boolean;
+    mentionedJids?: string[];
+    pin?: { action: 'pin' | 'unpin'; messageId?: string; remoteJid?: string };
     raw: unknown;
   }) => void;
+  'chat.read': (data: { jid: string; lidJid?: string; read: boolean; lastMessageTimestamp?: number }) => void;
+  'chats.read_reconcile': (data: {
+    reads: Array<{ jid: string; lidJid?: string; read: boolean; lastMessageTimestamp?: number }>;
+  }) => void;
+  'chat.archived': (data: { jid: string; archived: boolean }) => void;
+  'chat.pinned': (data: { jid: string; pinned: boolean }) => void;
   'history.sync': (payload: ParsedHistorySync) => void;
   'contacts.sync': (payload: {
     contacts: Array<{ jid: string; name: string; firstName?: string }>;
@@ -171,6 +184,21 @@ export class WaClient extends EventEmitter {
   public readonly signalStore: SignalStore;
   public readonly senderKeyStore: SenderKeyStore;
   private readonly senderKeyCipher: SenderKeyCipher;
+
+  /**
+   * Per-collection syncd integrity state (version + LtHash over mutation
+   * value MACs + indexMac→valueMac map). Rebuilt on every connect from the
+   * version-0 resync replay; required for the WRITE path — the server
+   * rejects patches whose snapshotMac/patchMac don't chain on its state.
+   */
+  private appState = new Map<string, {
+    version: number;
+    hash: Buffer;
+    macs: Map<string, Buffer>;
+    keyId?: Buffer;
+  }>();
+  private lastAppStateKeyId: Buffer | undefined;
+  private appStateSendChain: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly creds: WaCreds,
@@ -426,7 +454,14 @@ export class WaClient extends EventEmitter {
             const encType = encNode.attrs.type;
             const ciphertext = encNode.content as Buffer;
             if (!Buffer.isBuffer(ciphertext)) continue;
-            const from = node.attrs.participant || node.attrs.from!;
+            // LID-era group stanzas carry participant_pn/participant_lid
+            // instead of a plain participant attr — never fall through to
+            // the group JID or the stored `from` becomes the group itself.
+            const from =
+              node.attrs.participant ||
+              node.attrs.participant_pn ||
+              node.attrs.participant_lid ||
+              node.attrs.from!;
             const cipher = new SessionCipher(this.signalStore, from);
             const plaintext =
               encType === 'pkmsg'
@@ -551,6 +586,22 @@ export class WaClient extends EventEmitter {
 
             const { message: unwrapped, fromMe, destinationJid, edited } =
               unwrapMessage(decoded);
+            if (unwrapped.audioMessage) {
+              const am = unwrapped.audioMessage as Record<string, unknown>;
+              logger.info(
+                {
+                  from: node.attrs.from,
+                  mimetype: am.mimetype,
+                  seconds: am.seconds,
+                  ptt: am.ptt,
+                  fileLength: am.fileLength,
+                  hasUrl: !!am.url,
+                  hasDirectPath: !!am.directPath,
+                  viewOnce: am.viewOnce,
+                },
+                'incoming audioMessage',
+              );
+            }
             const norm = normalizeMessageContent(unwrapped);
             // senderKeyDistributionMessage and other content-less frames must
             // not surface as empty chat bubbles.
@@ -568,6 +619,7 @@ export class WaClient extends EventEmitter {
             // when present, else a usync 'lid' lookup — so one contact stays
             // one conversation instead of splitting across PN/LID twins.
             const senderPnRaw = node.attrs.sender_pn || node.attrs.participant_pn;
+            const senderLidAttr = node.attrs.sender_lid || node.attrs.participant_lid;
             let chatJid = destinationJid || stripDevice(node.attrs.from!)!;
             let lidJid: string | undefined;
             if (chatJid.endsWith('@lid') && !chatJid.includes('@g.us')) {
@@ -589,7 +641,7 @@ export class WaClient extends EventEmitter {
               jid: chatJid,
               sender: stripDevice(from)!,
               senderPn: senderPnRaw,
-              senderLid: lidJid,
+              senderLid: lidJid || stripDevice(senderLidAttr),
               notify: node.attrs.notify,
               id: msgId || '',
               timestamp: +(node.attrs.t || 0) || undefined,
@@ -602,6 +654,8 @@ export class WaClient extends EventEmitter {
               quotedMessageId: norm.quotedMessageId,
               quotedParticipant: norm.quotedParticipant,
               isForwarded: norm.isForwarded,
+              mentionedJids: norm.mentionedJids,
+              pin: norm.pin,
               raw: decoded,
             });
           } catch (decErr) {
@@ -622,7 +676,8 @@ export class WaClient extends EventEmitter {
         break;
       }
 
-      case 'receipt':
+      case 'receipt': {
+        void this.ackStanza(node);
         // A peer device that could not decrypt our message asks for a resend
         // with fresh key material attached. Without this the recipient sees
         // "Waiting for this message. Check your phone." forever.
@@ -640,15 +695,83 @@ export class WaClient extends EventEmitter {
           void this.handleRetryReceipt(node).catch((err) =>
             logger.warn({ err }, 'retry receipt handling failed'),
           );
+        } else if (node.attrs.type === 'read-self') {
+          // Primary phone / companion read incoming messages in this chat.
+          const stripDev = (j?: string) => {
+            if (!j) return undefined;
+            const d = jidDecode(j);
+            return d ? jidEncode(d.user, d.server) : j;
+          };
+          const meBare = stripDev(this.creds.me?.id);
+          const meLidBare = stripDev(this.creds.me?.lid);
+          let rawChat = stripDev(node.attrs.from);
+          if (rawChat && (rawChat === meBare || rawChat === meLidBare) && node.attrs.recipient) {
+            rawChat = stripDev(node.attrs.recipient);
+          }
+          if (rawChat && !rawChat.endsWith('@broadcast')) {
+            void (async () => {
+              let chatJid = rawChat!;
+              let lidJid: string | undefined;
+              const senderPn = node.attrs.sender_pn || node.attrs.recipient_pn;
+              if (chatJid.endsWith('@lid') && !chatJid.endsWith('@g.us')) {
+                lidJid = chatJid;
+                if (senderPn) {
+                  chatJid = `${String(senderPn).split('@')[0]}@s.whatsapp.net`;
+                } else {
+                  try {
+                    const pn = (await this.resolveLidUsers([chatJid])).get(chatJid);
+                    if (pn) chatJid = pn;
+                  } catch { /* keep LID */ }
+                }
+              }
+              this.emit('chat.read', { jid: chatJid, lidJid, read: true });
+            })();
+          }
         }
         this.emit('stanza', node);
         break;
+      }
 
       case 'notification': {
-        // Pushed app-state deltas (contact saved on the phone, pin/mute…)
-        // arrive as <notification><collection> outside the dirty→resync path.
-        if (getBinaryNodeChildren(node, 'collection').length) {
-          void this.processAppStateResult(node).catch(() => undefined);
+        void this.ackStanza(node);
+        // A peer reporting media fetch/decrypt failure asks us to re-upload;
+        // log it verbatim so the failure mode is visible instead of silent.
+        if (
+          node.attrs.type === 'mediaretry' ||
+          node.attrs.type === 'server-error'
+        ) {
+          logger.warn(
+            {
+              from: node.attrs.from,
+              type: node.attrs.type,
+              id: node.attrs.id,
+              participant: node.attrs.participant,
+              children: getBinaryNodeChildren(node).map((c) => c.tag),
+            },
+            'peer reported media/message failure',
+          );
+        }
+        // App-state notifications arrive either with inline <patch> blobs or as
+        // a bare <collection name="regular_low" version="…"/> server_sync poke
+        // asking us to pull delta patches from our stored version.
+        const collNodes = getBinaryNodeChildren(node, 'collection');
+        if (collNodes.length) {
+          const hasInlinePatches = collNodes.some(
+            (c) =>
+              getBinaryNodeChild(c, 'patch') ||
+              getBinaryNodeChild(c, 'patches') ||
+              getBinaryNodeChild(c, 'snapshot'),
+          );
+          if (hasInlinePatches) {
+            void this.processAppStateResult(node).catch(() => undefined);
+          } else {
+            const names = collNodes
+              .map((c) => String(c.attrs?.name || ''))
+              .filter(Boolean);
+            if (names.length) {
+              void this.syncAppStateCollections(names).catch(() => undefined);
+            }
+          }
         }
         this.emit('stanza', node);
         break;
@@ -858,6 +981,81 @@ export class WaClient extends EventEmitter {
       }
     }
 
+    // Group retries: the requester lacks our SENDER KEY. Real WhatsApp Web
+    // answers with ONE pairwise message that embeds the SKDM inside the
+    // original payload — { ...message, senderKeyDistributionMessage } —
+    // encrypted pairwise straight onto the stanza (no <participants>
+    // wrapper), with `participant` naming the requesting device. The
+    // recipient stores our sender key from the embedded SKDM, then
+    // decrypts the buffered skmsg and the "Waiting" bubble fills.
+    if (cached.destinationJid.endsWith('@g.us')) {
+      const gid = cached.destinationJid;
+      const meIdStr = this.creds.me?.id || '';
+      const meDevice = jidDecode(meIdStr)?.device ?? 0;
+      const meLid = jidDecode(this.creds.me?.lid || '')?.user;
+      const wantLid = decoded.server === 'lid' || decoded.server === 'hosted.lid';
+      const senderIdentity =
+        wantLid && meLid ? jidEncode(meLid, 'lid', meDevice) : meIdStr;
+      const state = this.senderKeyStore.load(SenderKeyStore.name(gid, senderIdentity));
+
+      const messageToSend: Record<string, unknown> = { ...cached.message };
+      if (state?.skdm) {
+        messageToSend.senderKeyDistributionMessage = {
+          groupId: gid,
+          axolotlSenderKeyDistributionMessage: Buffer.from(state.skdm, 'base64'),
+        };
+      } else {
+        logger.warn({ msgId, requesterJid, senderIdentity }, 'group retry: no sender-key state to embed');
+      }
+
+      const isOwnDevice =
+        decoded.user === jidDecode(meIdStr)?.user || decoded.user === meLid;
+      const payload = isOwnDevice
+        ? { deviceSentMessage: { destinationJid: gid, message: messageToSend } }
+        : messageToSend;
+
+      const bytes = await this.encodeWAMessage(payload);
+      const cipher = new SessionCipher(this.signalStore, requesterJid);
+      const { type, body } = await cipher.encrypt(bytes);
+
+      const retryCount = getBinaryNodeChild(node, 'retry')?.attrs.count;
+      const stanza: BinaryNode = {
+        tag: 'message',
+        attrs: {
+          id: msgId,
+          to: gid,
+          type: cached.stanzaType,
+          participant: requesterJid,
+          addressing_mode: wantLid ? 'lid' : 'pn',
+        },
+        content: [
+          {
+            tag: 'enc',
+            attrs: {
+              v: '2',
+              type,
+              ...(retryCount ? { count: String(retryCount) } : {}),
+            },
+            content: body,
+          },
+        ],
+      };
+      if (type === 'pkmsg' && this.creds.account) {
+        const account = { ...(this.creds.account as Record<string, unknown>) };
+        if (!account.accountSignatureKey || !(account.accountSignatureKey as Buffer).length) {
+          account.accountSignatureKey = null;
+        }
+        (stanza.content as BinaryNode[]).push({
+          tag: 'device-identity',
+          attrs: {},
+          content: await WaProto.encodeADVSignedDeviceIdentity(account),
+        });
+      }
+      await this.sendNode(stanza);
+      logger.info({ msgId, requesterJid, attempts }, 're-sent group message with embedded SKDM');
+      return;
+    }
+
     const meUser = jidDecode(this.creds.me?.id || '')?.user;
     const meLidUser = jidDecode(this.creds.me?.lid || '')?.user;
     const isOwnDevice = decoded.user === meUser || decoded.user === meLidUser;
@@ -875,6 +1073,13 @@ export class WaClient extends EventEmitter {
         id: msgId,
         to: cached.destinationJid,
         type: cached.stanzaType,
+        // Re-sent revokes need the same `edit=7` marker as the original.
+        ...(
+          (cached.message as { protocolMessage?: { type?: unknown } })
+            ?.protocolMessage?.type === 'REVOKE'
+            ? { edit: '7' }
+            : {}
+        ),
       },
       content: [
         {
@@ -938,7 +1143,7 @@ export class WaClient extends EventEmitter {
         const buf = Buffer.isBuffer(axolotl) ? axolotl : Buffer.from(axolotl);
         try {
           await this.senderKeyCipher.processDistribution(String(groupJid), authorJid, buf);
-          logger.info({ groupJid, authorJid }, 'stored sender key distribution');
+          logger.info({ groupJid, authorJid, field }, 'stored sender key distribution');
         } catch (e) {
           logger.warn(
             {
@@ -994,18 +1199,19 @@ export class WaClient extends EventEmitter {
       // store it locally as well or we still won't be able to decrypt the resend.
       const preKeyId = this.creds.nextPreKeyId++;
       const preKey = generateWaKeyPair();
-      this.creds.preKeys = this.creds.preKeys || {};
-      this.creds.preKeys[preKeyId.toString()] = preKey;
-      // One-time prekeys uploaded for peers that never answer are never
-      // consumed (removePreKey only runs on pkmsg decrypt) and grew creds to
-      // 80k+ entries / 17 MB — every saveCreds then stalled the event loop in
-      // a multi-second sync JSON.stringify and the engine livelocked. Evict
-      // the oldest ids beyond a bound; live prekeys are used within seconds.
-      const storedIds = Object.keys(this.creds.preKeys);
-      if (storedIds.length > WaClient.MAX_STORED_PREKEYS) {
-        storedIds.sort((a, b) => Number(a) - Number(b));
-        for (const id of storedIds.slice(0, storedIds.length - WaClient.MAX_STORED_PREKEYS)) {
-          delete this.creds.preKeys[id];
+      // Retry-issued keys go in their own bounded map: they are only valid
+      // for the peer's immediate resend, so pruning old ones is safe. The
+      // server-published bulk keys in creds.preKeys must NEVER be evicted —
+      // a peer can hold a fetched bundle for weeks, and deleting the key it
+      // references makes every message from it permanently undecryptable
+      // (the previous single-map eviction did exactly that).
+      this.creds.retryPreKeys = this.creds.retryPreKeys || {};
+      this.creds.retryPreKeys[preKeyId.toString()] = preKey;
+      const retryIds = Object.keys(this.creds.retryPreKeys);
+      if (retryIds.length > WaClient.MAX_STORED_RETRY_PREKEYS) {
+        retryIds.sort((a, b) => Number(a) - Number(b));
+        for (const id of retryIds.slice(0, retryIds.length - WaClient.MAX_STORED_RETRY_PREKEYS)) {
+          delete this.creds.retryPreKeys[id];
         }
       }
       this.saveCreds();
@@ -1093,6 +1299,20 @@ export class WaClient extends EventEmitter {
     await this.sendNode(ack).catch(() => undefined);
   }
 
+  private async ackStanza(node: BinaryNode): Promise<void> {
+    const id = node.attrs.id;
+    const to = node.attrs.from;
+    if (!id || !to) return;
+    const ack: BinaryNode = {
+      tag: 'ack',
+      attrs: { id, to, class: node.tag },
+    };
+    if (node.attrs.type) ack.attrs.type = node.attrs.type;
+    if (node.attrs.participant) ack.attrs.participant = node.attrs.participant;
+    if (node.attrs.recipient) ack.attrs.recipient = node.attrs.recipient;
+    await this.sendNode(ack).catch(() => undefined);
+  }
+
   private async onPairDeviceIq(stanza: BinaryNode): Promise<void> {
     // acknowledge the iq
     await this.sendNode({
@@ -1170,6 +1390,7 @@ export class WaClient extends EventEmitter {
         await this.digestKeyBundle().catch(() => undefined);
         await this.sendUnifiedSession().catch(() => undefined);
         await this.resyncAppState().catch(() => undefined);
+        await this.reconcileReadStates().catch(() => undefined);
       } catch {
         // non-fatal
       }
@@ -1218,7 +1439,7 @@ export class WaClient extends EventEmitter {
             reject(
               Object.assign(
                 new Error(`Stanza error (${errAttr || errChild?.attrs.code || 'unknown'})`),
-                { statusCode: +(errAttr || errChild?.attrs.code || 500) },
+                { statusCode: +(errAttr || errChild?.attrs.code || 500), node: n },
               ),
             );
             return;
@@ -1334,33 +1555,69 @@ export class WaClient extends EventEmitter {
    * the owner's address book (encrypted ContactAction mutations), so the
    * result is decoded into a 'contacts.sync' event.
    */
-  private resyncAppState(): Promise<BinaryNode> {
-    const collections = [
+  private async resyncAppState(): Promise<void> {
+    await this.syncAppStateCollections([
       'critical_block',
       'critical_unblock_low',
       'regular_high',
       'regular_low',
       'regular',
-    ];
-    return this.query({
-      tag: 'iq',
-      attrs: { to: S_WHATSAPP_NET, type: 'set', xmlns: 'w:sync:app:state' },
-      content: [
-        {
-          tag: 'sync',
-          attrs: {},
-          content: collections.map((name) => ({
-            tag: 'collection',
-            attrs: { name, version: '0', return_snapshot: 'false' },
-          })),
-        },
-      ],
-    }).then((result) => {
-      void this.processAppStateResult(result).catch((err) =>
-        logger.warn({ err }, 'app-state collection decode failed'),
-      );
-      return result;
-    });
+    ]);
+  }
+
+  /**
+   * Pull app-state deltas until every collection drains (has_more_patches
+   * clears). Requests start at the persisted version — a v0 collection
+   * replays full history, so its chat.* events are suppressed (ancient
+   * mutations, not fresh signals). Contacts still import either way.
+   */
+  private async syncAppStateCollections(names: string[]): Promise<void> {
+    const pending = new Set(names);
+    const initialSync = new Set<string>();
+    // Pages can be small — regular_low on a busy account is dozens of
+    // rounds. 60 is generous headroom, not an infinite loop.
+    let guard = 0;
+    while (pending.size && guard++ < 60) {
+      const nodes = [...pending].map((name) => {
+        const st = this.appStateState(name);
+        if (!st.version) initialSync.add(name);
+        return {
+          tag: 'collection',
+          attrs: {
+            name,
+            version: String(st.version),
+            // Always patch replay — snapshots arrive as CDN ExternalBlobReference
+            // blobs this decoder doesn't unpack; v0 replays build the same state.
+            return_snapshot: 'false',
+          },
+        };
+      });
+      const result = await this.query({
+        tag: 'iq',
+        attrs: { to: S_WHATSAPP_NET, type: 'set', xmlns: 'w:sync:app:state' },
+        content: [{ tag: 'sync', attrs: {}, content: nodes }],
+      });
+      let collections: CollectionState[] = [];
+      try {
+        collections = await this.processAppStateResult(result, initialSync);
+      } catch (err) {
+        logger.warn({ err }, 'app-state collection decode failed');
+      }
+      for (const name of [...pending]) {
+        const st = collections.find((c) => c.name === name);
+        if (!st || !st.hasMore) pending.delete(name);
+      }
+    }
+    if (pending.size) {
+      logger.warn({ remaining: [...pending] }, 'app-state resync stopped before draining all collections');
+    }
+  }
+
+  /** Drop local state for one collection and replay it from v0 (409 recovery). */
+  private async fullResyncCollection(name: string): Promise<void> {
+    this.appState.delete(name);
+    if (this.creds.appStateCollections) delete this.creds.appStateCollections[name];
+    await this.syncAppStateCollections([name]);
   }
 
   /**
@@ -1389,8 +1646,81 @@ export class WaClient extends EventEmitter {
     this.saveCreds();
     logger.info({ shared: keys.length, added }, 'App-state sync keys stored');
     if (added > 0) {
-      void this.resyncAppState().catch(() => undefined);
+      void this.resyncAppState()
+        .then(() => this.reconcileReadStates())
+        .catch(() => undefined);
     }
+  }
+
+  /**
+   * Replay regular_low from v0 (read-only) to extract the latest phone-side
+   * MarkChatAsReadAction + lastMessageTimestamp per chat, then emit
+   * 'chats.read_reconcile' so Laravel zeroes stale unread counts on chats the
+   * owner already read on WhatsApp while preserving genuinely newer unreads.
+   */
+  public async reconcileReadStates(): Promise<
+    Array<{ jid: string; lidJid?: string; read: boolean; lastMessageTimestamp?: number }>
+  > {
+    if (!this.isOpen) return [];
+    const keyMap = new Map<string, Buffer>();
+    for (const [id, b64] of Object.entries(this.creds.appStateKeys || {})) {
+      try {
+        keyMap.set(id, Buffer.from(b64, 'base64'));
+      } catch { /* skip */ }
+    }
+    if (!keyMap.size) return [];
+
+    const allRecords: FlatRecord[] = [];
+    for (const collName of ['regular_low', 'regular_high', 'regular']) {
+      let version = 0;
+      let guard = 0;
+      while (guard++ < 60) {
+        const result = await this.query({
+          tag: 'iq',
+          attrs: { to: S_WHATSAPP_NET, type: 'set', xmlns: 'w:sync:app:state' },
+          content: [
+            {
+              tag: 'sync',
+              attrs: {},
+              content: [
+                {
+                  tag: 'collection',
+                  attrs: { name: collName, version: String(version), return_snapshot: 'false' },
+                },
+              ],
+            },
+          ],
+        });
+        const { records, collections } = await AppStateProcessor.collectRecords(result);
+        allRecords.push(...records);
+        const st = collections.find((c) => c.name === collName);
+        if (st?.version && st.version > version) version = st.version;
+        if (!st || !st.hasMore) break;
+      }
+    }
+
+    const entries = await AppStateProcessor.extractChatReads(allRecords, keyMap, true);
+    if (!entries.length) return [];
+
+    const lidJids = entries.map((e) => e.jid).filter((j) => j.endsWith('@lid') && !j.endsWith('@g.us'));
+    const lidMap = new Map<string, string>();
+    if (lidJids.length) {
+      try {
+        const resolved = await this.resolveLidUsers(lidJids);
+        for (const [lid, pn] of resolved) lidMap.set(lid, pn);
+      } catch { /* keep LID forms */ }
+    }
+
+    const normalized = entries.map((e) => ({
+      jid: lidMap.get(e.jid) || e.jid,
+      lidJid: e.jid.endsWith('@lid') ? e.jid : undefined,
+      read: e.read,
+      lastMessageTimestamp: e.lastMessageTimestamp,
+    }));
+
+    this.emit('chats.read_reconcile', { reads: normalized });
+    logger.info({ chats: normalized.length, records: allRecords.length }, 'app-state chat reads reconciled');
+    return normalized;
   }
 
   /**
@@ -1398,9 +1728,13 @@ export class WaClient extends EventEmitter {
    * emit 'contacts.sync' for Laravel, and ask the primary for any keys we
    * still lack (its share arrives asynchronously and re-triggers a resync).
    */
-  private async processAppStateResult(result: BinaryNode): Promise<void> {
-    const records = await AppStateProcessor.collectRecords(result);
-    if (!records.length) return;
+  private async processAppStateResult(
+    result: BinaryNode,
+    suppressEventCollections?: Set<string>,
+  ): Promise<CollectionState[]> {
+    const { records, collections } = await AppStateProcessor.collectRecords(result);
+    if (!records.length && !collections.length) return collections;
+    this.trackAppState(records, collections);
 
     const keyMap = new Map<string, Buffer>();
     for (const [id, b64] of Object.entries(this.creds.appStateKeys || {})) {
@@ -1411,6 +1745,21 @@ export class WaClient extends EventEmitter {
       }
     }
 
+    // "Read on another device" patches — keep the CRM unread badge in sync
+    // with the phone instead of only resetting when the chat is opened here.
+    // suppressEventCollections gates this to fresh deltas: on a from-v0
+    // replay every markChatAsRead ever written would zero badges on chats
+    // that have legitimately gone unread since.
+    try {
+      const emitOk = (c?: string) => !suppressEventCollections?.has(c ?? '');
+      const reads = await AppStateProcessor.extractChatReads(records, keyMap);
+      for (const r of reads) if (emitOk(r.collection)) this.emit('chat.read', r);
+      const archives = await AppStateProcessor.extractChatArchives(records, keyMap);
+      for (const a of archives) if (emitOk(a.collection)) this.emit('chat.archived', a);
+      const pins = await AppStateProcessor.extractChatPins(records, keyMap);
+      for (const p2 of pins) if (emitOk(p2.collection)) this.emit('chat.pinned', p2);
+    } catch { /* best effort */ }
+
     const { contacts, missingKeyIds } = await AppStateProcessor.extractContacts(records, keyMap);
     if (contacts.length) {
       this.emit('contacts.sync', { contacts });
@@ -1420,6 +1769,192 @@ export class WaClient extends EventEmitter {
       await this.requestAppStateKeys(missingKeyIds.map((b64) => Buffer.from(b64, 'base64'))).catch(
         (err) => logger.debug({ err, missing: missingKeyIds.length }, 'app-state key request failed'),
       );
+    }
+    return collections;
+  }
+
+  private appStateState(name: string) {
+    let st = this.appState.get(name);
+    if (!st) {
+      const persisted = this.creds.appStateCollections?.[name];
+      const hash = persisted?.hash ? Buffer.from(persisted.hash, 'base64') : null;
+      st = {
+        version: hash && hash.length === AppStateProcessor.LT_HASH_SIZE ? (persisted?.version ?? 0) : 0,
+        hash: hash && hash.length === AppStateProcessor.LT_HASH_SIZE
+          ? hash
+          : Buffer.alloc(AppStateProcessor.LT_HASH_SIZE),
+        macs: new Map(),
+      };
+      this.appState.set(name, st);
+    }
+    return st;
+  }
+
+  /**
+   * Feed decoded snapshot/patch records into the LtHash tracker, in wire
+   * order: SET replaces its index's value-MAC contribution, REMOVE drops
+   * it. Records whose previous SET we never saw can't be subtracted — a
+   * drifted hash only costs a 409+retry on our next write.
+   * Version+hash persist into creds so resyncs fetch deltas only; the
+   * macs map stays in memory and rebuilds on full replays.
+   */
+  private trackAppState(records: FlatRecord[], collections: CollectionState[]): void {
+    // A snapshot is the complete live state — reset before applying.
+    // The persisted entry must go too or the lazy seeder restores it.
+    for (const c of collections) {
+      if (c.hadSnapshot) {
+        this.appState.delete(c.name);
+        if (this.creds.appStateCollections) delete this.creds.appStateCollections[c.name];
+      }
+    }
+    for (const rec of records) {
+      if (!rec.indexMac || !rec.collection) continue;
+      const st = this.appStateState(rec.collection);
+      const idx = rec.indexMac.toString('base64');
+      if (rec.operation === 1) {
+        const prev = st.macs.get(idx);
+        if (prev) {
+          AppStateProcessor.ltHashOp(st.hash, [prev], true);
+          st.macs.delete(idx);
+        }
+        continue;
+      }
+      const vm = rec.value && rec.value.length >= 32
+        ? rec.value.subarray(rec.value.length - 32)
+        : undefined;
+      if (!vm) continue;
+      const prev = st.macs.get(idx);
+      if (prev) AppStateProcessor.ltHashOp(st.hash, [prev], true);
+      AppStateProcessor.ltHashOp(st.hash, [vm], false);
+      st.macs.set(idx, vm);
+      if (rec.keyId) {
+        st.keyId = rec.keyId;
+        this.lastAppStateKeyId = rec.keyId;
+      }
+    }
+    for (const c of collections) {
+      const hasRecords = c.hadSnapshot || records.some((r) => r.collection === c.name);
+      if (c.version && hasRecords) {
+        const st = this.appStateState(c.name);
+        if (c.version > st.version) st.version = c.version;
+      }
+    }
+    if (collections.length) {
+      this.creds.appStateCollections = this.creds.appStateCollections || {};
+      for (const c of collections) {
+        const st = this.appStateState(c.name);
+        this.creds.appStateCollections[c.name] = {
+          version: st.version,
+          hash: st.hash.toString('base64'),
+        };
+      }
+      this.saveCreds();
+    }
+  }
+
+  /**
+   * Write a markChatAsRead mutation to regular_low — the only mechanism
+   * that clears the unread badge on the owner's other devices (the phone).
+   * Read receipts only turn the SENDER's ticks blue.
+   */
+  public async markChatAsRead(chatJid: string, read = true): Promise<void> {
+    const jid = chatJid.includes('@')
+      ? chatJid
+      : jidEncode(chatJid.replace(/\D/g, ''), 's.whatsapp.net');
+    await this.queueAppStateSend('regular_low', [{
+      index: ['markChatAsRead', jid],
+      version: 3,
+      value: {
+        markChatAsReadAction: {
+          read,
+          messageRange: { lastMessageTimestamp: Math.floor(Date.now() / 1000) },
+        },
+      },
+    }]);
+  }
+
+  /** Serialise app-state writes — concurrent patches must chain versions. */
+  private queueAppStateSend(
+    collection: string,
+    mutations: OutgoingMutation[],
+  ): Promise<void> {
+    const run = this.appStateSendChain.then(() => this.sendAppStatePatch(collection, mutations, true));
+    this.appStateSendChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async sendAppStatePatch(
+    collection: string,
+    mutations: OutgoingMutation[],
+    allowRetry: boolean,
+  ): Promise<void> {
+    if (!this.isOpen) throw new Error('socket not open');
+    const st = this.appStateState(collection);
+    // The newest key id seen anywhere is the active one — a stale
+    // collection-local key id produces MACs the server can't verify.
+    let keyId = this.lastAppStateKeyId ?? st.keyId;
+    if (!keyId) {
+      const first = Object.keys(this.creds.appStateKeys || {})[0];
+      if (first) keyId = Buffer.from(first, 'base64');
+    }
+    if (!keyId) throw new Error('no app-state sync key available');
+    const keyDataB64 = this.creds.appStateKeys?.[keyId.toString('base64')];
+    if (!keyDataB64) throw new Error('missing key data for app-state key');
+
+    const encoded = await AppStateProcessor.encodePatch({
+      collection,
+      version: st.version,
+      hash: st.hash,
+      keyId,
+      keyData: Buffer.from(keyDataB64, 'base64'),
+      mutations,
+      getPrevValueMac: (idx) => st.macs.get(idx.toString('base64')),
+    });
+
+    const resp = await this.query({
+      tag: 'iq',
+      attrs: { to: S_WHATSAPP_NET, type: 'set', xmlns: 'w:sync:app:state' },
+      content: [
+        {
+          tag: 'sync',
+          attrs: {},
+          content: [
+            {
+              tag: 'collection',
+              attrs: {
+                name: collection,
+                version: String(st.version),
+                return_snapshot: 'false',
+              },
+              content: [{ tag: 'patch', attrs: {}, content: encoded.patchBytes }],
+            },
+          ],
+        },
+      ],
+    }, 20_000);
+
+    const syncNode = getBinaryNodeChild(resp, 'sync');
+    const coll = syncNode
+      ? getBinaryNodeChild(syncNode, 'collection')
+      : getBinaryNodeChild(resp, 'collection');
+    const errNode = getBinaryNodeChild(coll ?? resp, 'error') ?? getBinaryNodeChild(resp, 'error');
+    if (errNode || coll?.attrs?.type === 'error') {
+      if (allowRetry && errNode?.attrs?.code === '409') {
+        // Version/hash drift — replay the collection from scratch so the
+        // next patch chains on the server's real state.
+        logger.warn({ collection }, 'app-state patch conflicted, resyncing then retrying');
+        await this.fullResyncCollection(collection).catch(() => undefined);
+        return this.sendAppStatePatch(collection, mutations, false);
+      }
+      throw new Error(`app-state ${collection} rejected (${JSON.stringify(errNode?.attrs || {})})`);
+    }
+
+    // Accepted — advance local integrity state to the new version.
+    st.version = encoded.version;
+    st.hash = encoded.hash;
+    st.keyId = keyId;
+    for (const { indexMac, valueMac } of encoded.mutationMacs) {
+      st.macs.set(indexMac.toString('base64'), valueMac);
     }
   }
 
@@ -1484,6 +2019,15 @@ export class WaClient extends EventEmitter {
     await this.query(node);
     this.creds.nextPreKeyId = startId + count;
     this.creds.firstUnuploadedPreKeyId = this.creds.nextPreKeyId;
+    // Safety bound only — server-published keys must live until a peer uses
+    // them, so the cap is generous (8k keys ≈ ~1.5 MB, years of uploads).
+    const bulkIds = Object.keys(this.creds.preKeys || {});
+    if (bulkIds.length > WaClient.MAX_STORED_BULK_PREKEYS) {
+      bulkIds.sort((a, b) => Number(a) - Number(b));
+      for (const id of bulkIds.slice(0, bulkIds.length - WaClient.MAX_STORED_BULK_PREKEYS)) {
+        delete this.creds.preKeys![id];
+      }
+    }
     this.saveCreds();
   }
 
@@ -1506,6 +2050,15 @@ export class WaClient extends EventEmitter {
     } catch {
       // non-fatal
     }
+  }
+
+  /** Force-replace the server's one-time prekey pool with fresh keys.
+   *  Needed when stored prekeys were lost/evicted: the server keeps handing
+   *  out the stale pool to new bundle-fetches, so every peer that fetches
+   *  gets a key we can no longer resolve — replacing the list heals them. */
+  public async refreshServerPreKeys(count = 812): Promise<number> {
+    await this.uploadPreKeys(count);
+    return count;
   }
 
   private async digestKeyBundle(): Promise<void> {
@@ -1777,6 +2330,257 @@ export class WaClient extends EventEmitter {
     return out;
   }
 
+  /**
+   * Group metadata via the `w:g2` info-query — same call WhatsApp Web makes
+   * for the group-info drawer. Returns subject/owner plus every current
+   * participant with its admin flag. Participant `jid` may arrive as a
+   * PN JID, a @lid JID, or device-suffixed (`:N`) — callers get the raw
+   * form plus `pn`/`lid` companion attrs the server started including for
+   * migrated members.
+   */
+  public async getGroupMetadata(jid: string): Promise<{
+    id: string;
+    subject?: string;
+    owner?: string;
+    createdAt?: number;
+    announce?: boolean;
+    restrict?: boolean;
+    addressingMode?: string;
+    ephemeralExpiration?: number;
+    memberAddMode?: string;
+    joinApprovalMode?: boolean;
+    participants: Array<{
+      jid: string;
+      lid?: string;
+      pn?: string;
+      admin: boolean;
+      superadmin: boolean;
+    }>;
+  }> {
+    const gid = jid.includes('@')
+      ? jid
+      : jidEncode(jid.replace(/\D/g, ''), 'g.us');
+
+    const result = await this.query(
+      {
+        tag: 'iq',
+        attrs: { to: gid, type: 'get', xmlns: 'w:g2' },
+        content: [{ tag: 'query', attrs: { request: 'interactive' } }],
+      },
+      15_000,
+    );
+
+    const group = getBinaryNodeChild(result, 'group');
+    if (!group) {
+      throw new Error('Group metadata not returned by server');
+    }
+
+    const participants = getBinaryNodeChildren(group, 'participant').map(
+      (p) => {
+        const rawJid = String(p.attrs.jid || '');
+        // Device-qualified jids (`user:device@server`) strip to the account
+        // form; `lid`/`phone_number` attrs carry the companion identity for
+        // LID-migrated members.
+        const bare = rawJid.split(':')[0]!;
+        const lid = p.attrs.lid
+          ? String(p.attrs.lid)
+          : bare.endsWith('@lid')
+            ? bare
+            : undefined;
+        const pn = p.attrs.phone_number
+          ? `${String(p.attrs.phone_number).replace(/\D/g, '')}@s.whatsapp.net`
+          : bare.endsWith('@s.whatsapp.net')
+            ? bare
+            : undefined;
+        const type = String(p.attrs.type || '');
+        return {
+          jid: bare,
+          lid,
+          pn,
+          admin: type === 'admin' || type === 'superadmin',
+          superadmin: type === 'superadmin',
+        };
+      },
+    );
+
+    return {
+      id: gid,
+      subject: group.attrs.subject ? String(group.attrs.subject) : undefined,
+      owner: group.attrs.owner
+        ? String(group.attrs.owner)
+        : group.attrs.creator
+          ? String(group.attrs.creator)
+          : undefined,
+      createdAt: group.attrs.creation
+        ? Number(group.attrs.creation)
+        : undefined,
+      // Current group settings — child markers inside the same group node.
+      announce: !!getBinaryNodeChild(group, 'announcement'),
+      restrict: !!getBinaryNodeChild(group, 'locked'),
+      ephemeralExpiration: getBinaryNodeChild(group, 'ephemeral')?.attrs.expiration
+        ? Number(getBinaryNodeChild(group, 'ephemeral')!.attrs.expiration)
+        : undefined,
+      memberAddMode: getBinaryNodeChild(group, 'member_add_mode')?.content
+        ? String(getBinaryNodeChild(group, 'member_add_mode')!.content)
+        : undefined,
+      joinApprovalMode: !!getBinaryNodeChild(group, 'membership_approval_mode'),
+      // 'lid' for LID-addressed groups — decides which own identity signs
+      // our sender key and lands as `addressing_mode` on the stanza.
+      addressingMode: group.attrs.addressing_mode ? String(group.attrs.addressing_mode) : undefined,
+      participants,
+    };
+  }
+
+  /** Rename a group — <subject> set-query with the raw utf-8 body. */
+  public async updateGroupSubject(jid: string, subject: string): Promise<void> {
+    await this.query(
+      {
+        tag: 'iq',
+        attrs: { to: jid, type: 'set', xmlns: 'w:g2' },
+        content: [
+          { tag: 'subject', attrs: {}, content: Buffer.from(subject, 'utf-8') },
+        ],
+      },
+      15_000,
+    );
+  }
+
+  /**
+   * Create a WhatsApp group — the same `w:g2` <create> set-query WhatsApp
+   * Web issues from the "New group" panel. `participants` accepts PN JIDs,
+   * LID JIDs, or bare digit strings. The result carries the new group JID
+   * plus per-participant status: '200' added, an error code (403 privacy,
+   * 404 not on WhatsApp…), or `invite` when the server queued an add
+   * request instead of adding them directly.
+   */
+  public async createGroup(
+    subject: string,
+    participants: string[],
+  ): Promise<{
+    id: string;
+    subject?: string;
+    createdAt?: number;
+    participants: Array<{ jid: string; status: string; invited: boolean }>;
+  }> {
+    const content: BinaryNode[] = participants.map((raw) => {
+      const jid = raw.includes('@')
+        ? raw
+        : jidEncode(raw.replace(/\D/g, ''), 's.whatsapp.net');
+      return { tag: 'participant', attrs: { jid } };
+    });
+
+    const result = await this.query(
+      {
+        tag: 'iq',
+        attrs: { to: jidEncode('', 'g.us'), type: 'set', xmlns: 'w:g2' },
+        content: [
+          {
+            tag: 'create',
+            attrs: {
+              subject,
+              key: bytesToCrockford(crypto.randomBytes(10)),
+            },
+            content,
+          },
+        ],
+      },
+      30_000,
+    );
+
+    const group = getBinaryNodeChild(result, 'group');
+    if (!group?.attrs.id) {
+      const errNode = getBinaryNodeChild(result, 'error');
+      throw new Error(
+        `Group create failed${errNode?.attrs.code ? ` (${errNode.attrs.code})` : ''}`,
+      );
+    }
+
+    // Server returns the id as bare digits — append the domain like
+    // extractGroupMetadata does so the jid is usable for follow-up iqs.
+    const rawId = String(group.attrs.id);
+    const id = rawId.includes('@') ? rawId : jidEncode(rawId, 'g.us');
+    return {
+      id,
+      subject: group.attrs.subject ? String(group.attrs.subject) : undefined,
+      createdAt: group.attrs.creation ? Number(group.attrs.creation) : undefined,
+      participants: getBinaryNodeChildren(group, 'participant').map((p) => ({
+        jid: String(p.attrs.jid || '').split(':')[0]!,
+        status: p.attrs.error ? String(p.attrs.error) : '200',
+        invited: !!getBinaryNodeChild(p, 'add_request'),
+      })),
+    };
+  }
+
+  /** Group privacy switches — same tags WhatsApp Web toggles in group settings. */
+  public async updateGroupSetting(
+    jid: string,
+    setting:
+      | 'announcement'
+      | 'not_announcement'
+      | 'locked'
+      | 'unlocked'
+      | 'member_add_mode'
+      | 'membership_approval_mode',
+    value?: string,
+  ): Promise<void> {
+    const child: BinaryNode = { tag: setting, attrs: {} };
+    if (setting === 'member_add_mode' && value) {
+      child.content = value;
+    } else if (setting === 'membership_approval_mode' && value) {
+      child.content = [{ tag: 'group_join', attrs: { state: value } }];
+    }
+    await this.query(
+      {
+        tag: 'iq',
+        attrs: { to: jid, type: 'set', xmlns: 'w:g2' },
+        content: [child],
+      },
+      15_000,
+    );
+  }
+
+  /** Disappearing-messages timer for a group; 0 disables it. */
+  public async updateGroupEphemeral(jid: string, seconds: number): Promise<void> {
+    await this.query(
+      {
+        tag: 'iq',
+        attrs: { to: jid, type: 'set', xmlns: 'w:g2' },
+        content: [
+          seconds > 0
+            ? { tag: 'ephemeral', attrs: { expiration: String(seconds) } }
+            : { tag: 'not_ephemeral', attrs: {} },
+        ],
+      },
+      15_000,
+    );
+  }
+
+  /**
+   * Set a group's profile picture — `w:profile:picture` set-query with the
+   * group JID as `target` and the resized JPEG as raw <picture> content.
+   */
+  public async updateGroupPicture(jid: string, jpeg: Buffer): Promise<void> {
+    await this.query(
+      {
+        tag: 'iq',
+        attrs: {
+          to: S_WHATSAPP_NET,
+          type: 'set',
+          xmlns: 'w:profile:picture',
+          target: jid,
+        },
+        content: [
+          {
+            tag: 'picture',
+            attrs: { type: 'image' },
+            content: jpeg,
+          },
+        ],
+      },
+      30_000,
+    );
+  }
+
   /** Fetch the device list for the given users via a usync query. */
   /** Short-lived device-list cache — a usync roundtrip per send adds ~300-800ms. */
   private deviceListCache = new Map<string, { devices: string[]; expires: number }>();
@@ -2018,6 +2822,13 @@ export class WaClient extends EventEmitter {
     const destinationJid = jid.includes('@')
       ? jid
       : jidEncode(jid.replace(/\D/g, ''), 's.whatsapp.net');
+
+    // Groups don't send per-device fan-out — they need the sender-key
+    // (skmsg) path with an SKDM distributed to every member device.
+    if (destinationJid.endsWith('@g.us')) {
+      return this.sendGroupMessage(destinationJid, message, stanzaType);
+    }
+
     const meId = this.creds.me.id;
     const meUser = jidDecode(meId)!.user;
 
@@ -2135,6 +2946,15 @@ export class WaClient extends EventEmitter {
       stanzaType ??
         (message.conversation || message.extendedTextMessage ? 'text' : 'media'),
     );
+    // Protocol stanzas must declare their kind via the `edit` attribute or
+    // recipients drop them silently: 7 = sender revoke, 8 = group-admin
+    // revoke (WhatsApp Web's editAttribute values). A plain REVOKE stanza
+    // gets a clean server ack but the client never deletes the message.
+    const protocolType = (
+      message.protocolMessage as { type?: unknown } | undefined
+    )?.type;
+    const editAttr =
+      protocolType === 'REVOKE' || protocolType === 0 ? '7' : undefined;
     const stanza: BinaryNode = {
       tag: 'message',
       attrs: {
@@ -2143,6 +2963,7 @@ export class WaClient extends EventEmitter {
         type:
           stanzaType ??
           (message.conversation || message.extendedTextMessage ? 'text' : 'media'),
+        ...(editAttr ? { edit: editAttr } : {}),
       },
       content: [{ tag: 'participants', attrs: {}, content: participants }],
     };
@@ -2160,6 +2981,166 @@ export class WaClient extends EventEmitter {
     }
 
     // await the server ack for this message id
+    await this.query(stanza, 25_000);
+    return { id: msgId };
+  }
+
+  /**
+   * Group message path — one `skmsg` ciphertext for the whole group. The
+   * sender key is created on first send; its SenderKeyDistributionMessage
+   * is fanned out pairwise-encrypted (`to` nodes inside <participants>) to
+   * every member device that hasn't received it, in the same stanza as the
+   * content — exactly how WhatsApp Web sends to groups.
+   */
+  private async sendGroupMessage(
+    gid: string,
+    message: Record<string, unknown>,
+    stanzaType?: 'text' | 'media',
+  ): Promise<{ id: string }> {
+    if (!this.creds.me) {
+      throw new Error('Not authenticated — pair the device first');
+    }
+
+    const meId = this.creds.me.id;
+    const meDevice = jidDecode(meId)?.device ?? 0;
+    const meLid = this.creds.me.lid;
+    const meLidUser = meLid ? jidDecode(meLid)?.user : undefined;
+
+    const meta = await this.getGroupMetadata(gid);
+    const addressingMode = meta.addressingMode === 'lid' ? 'lid' : 'pn';
+    // Sender-key author identity must match the `participant` form the
+    // server stamps on our stanza — LID groups know us by our LID device.
+    const senderIdentity =
+      addressingMode === 'lid' && meLidUser
+        ? jidEncode(meLidUser, 'lid', meDevice)
+        : meId;
+
+    // Member devices — own devices included so they keep a synced copy.
+    const memberJids = meta.participants.map((p) => p.jid).filter(Boolean);
+    const deviceJids = new Set<string>();
+    // One usync <list> carries every member — the old per-member loop fired
+    // a sequential query per participant (each up to the 60s query timeout)
+    // and pushed first sends to big groups past the caller's HTTP timeout.
+    try {
+      for (const d of await this.getDeviceList(memberJids)) deviceJids.add(d);
+    } catch {
+      // A rejected query shouldn't kill the fan-out — degrade to per-member.
+      for (const q of memberJids) {
+        try {
+          for (const d of await this.getDeviceList([q])) deviceJids.add(d);
+        } catch { /* one bad member form must not kill the send */ }
+      }
+    }
+    for (const q of [jidEncode(jidDecode(meId)!.user, 's.whatsapp.net'),
+      ...(meLidUser ? [jidEncode(meLidUser, 'lid')] : [])]) {
+      try {
+        for (const d of await this.getDeviceList([q])) deviceJids.add(d);
+      } catch { /* own-device enumeration is best-effort */ }
+    }
+    // One address form per stanza: LID-addressed groups only accept @lid
+    // `to` jids — mixing PN forms gets nodes silently dropped.
+    const wantLid = addressingMode === 'lid';
+    for (const d of [...deviceJids]) {
+      const server = d.split('@')[1] || '';
+      const isLidForm = server === 'lid' || server === 'hosted.lid';
+      if (wantLid !== isLidForm) deviceJids.delete(d);
+    }
+
+    const encoded = await this.encodeWAMessage(message);
+    const { ciphertext, skdm, state } = await this.senderKeyCipher.encryptForGroup(
+      gid,
+      senderIdentity,
+      encoded,
+    );
+
+    // SKDM fan-out — pairwise enc for every device that never got it.
+    const distributedTo = state.distributedTo || {};
+    const targets = [...deviceJids].filter(
+      (d) => !distributedTo[d] && !d.endsWith(':99@s.whatsapp.net'),
+    );
+    const participantNodes: BinaryNode[] = [];
+    let includeDeviceIdentity = false;
+    if (targets.length) {
+      const skdmBytes = await this.encodeWAMessage({
+        senderKeyDistributionMessage: {
+          groupId: gid,
+          axolotlSenderKeyDistributionMessage: skdm,
+        },
+      });
+      await this.assertSessions(targets);
+      for (const deviceJid of targets) {
+        try {
+          const cipher = new SessionCipher(this.signalStore, deviceJid);
+          const { type, body } = await cipher.encrypt(skdmBytes);
+          if (type === 'pkmsg') includeDeviceIdentity = true;
+          participantNodes.push({
+            tag: 'to',
+            attrs: { jid: deviceJid },
+            content: [{ tag: 'enc', attrs: { v: '2', type }, content: body }],
+          });
+          distributedTo[deviceJid] = true;
+        } catch (e) {
+          logger.debug({ deviceJid, err: e }, 'skdm encrypt failed for device');
+        }
+      }
+      state.distributedTo = distributedTo;
+      this.senderKeyStore.store(SenderKeyStore.name(gid, senderIdentity), state);
+    }
+
+    const msgId = this.generateMessageId();
+    this.cacheSentMessage(
+      msgId,
+      gid,
+      message,
+      stanzaType ?? (message.conversation || message.extendedTextMessage ? 'text' : 'media'),
+    );
+
+    const content: BinaryNode[] = [];
+    if (participantNodes.length) {
+      content.push({ tag: 'participants', attrs: {}, content: participantNodes });
+    }
+    content.push({ tag: 'enc', attrs: { v: '2', type: 'skmsg' }, content: ciphertext });
+    if (includeDeviceIdentity && this.creds.account) {
+      const account = { ...(this.creds.account as Record<string, unknown>) };
+      if (!account.accountSignatureKey || !(account.accountSignatureKey as Buffer).length) {
+        account.accountSignatureKey = null;
+      }
+      content.push({
+        tag: 'device-identity',
+        attrs: {},
+        content: await WaProto.encodeADVSignedDeviceIdentity(account),
+      });
+    }
+
+    const stanza: BinaryNode = {
+      tag: 'message',
+      attrs: {
+        id: msgId,
+        to: gid,
+        type:
+          stanzaType ??
+          (message.conversation || message.extendedTextMessage ? 'text' : 'media'),
+        addressing_mode: addressingMode,
+      },
+      content,
+    };
+    logger.info(
+      {
+        msgId,
+        gid,
+        addressingMode,
+        senderIdentity,
+        devices: deviceJids.size,
+        skdmTargets: targets.length,
+        skdmNodes: participantNodes.length,
+        stanza: JSON.stringify(stanza, (_k, v) =>
+          Buffer.isBuffer(v) || v instanceof Uint8Array
+            ? `<buf:${Buffer.from(v).length}B>`
+            : v,
+        ),
+      },
+      'outgoing group stanza',
+    );
     await this.query(stanza, 25_000);
     return { id: msgId };
   }
@@ -2517,16 +3498,48 @@ export class WaClient extends EventEmitter {
           },
         };
         break;
-      default:
+      default: {
+        // Modern WhatsApp clients render a ptt bubble without waveform or
+        // duration as unplayable — derive both from the raw audio bytes.
+        let seconds = opts.seconds;
+        let waveform: Buffer | undefined;
+        try {
+          if (!seconds) {
+            seconds = await MediaManager.probeDurationSeconds(opts.buffer);
+          }
+          waveform = await MediaManager.computeWaveform(opts.buffer);
+        } catch (err) {
+          logger.warn({ err }, 'audio waveform/duration derivation failed; sending without');
+        }
         message = {
           audioMessage: {
             ...base,
             ptt: opts.type === 'voice',
             // WhatsApp refuses/ptt-renders badly without a duration.
-            seconds: opts.seconds || undefined,
+            seconds: seconds || undefined,
+            waveform,
+            // Real clients always emit contextInfo on media messages —
+            // empty when there is no reply/forward context. Its absence
+            // makes phones render the ptt shell but never fetch media.
+            contextInfo: opts.contextInfo ? undefined : {},
           },
         };
+        logger.info(
+          {
+            destinationJid: jid,
+            mimetype: (message.audioMessage as Record<string, unknown>).mimetype,
+            seconds: (message.audioMessage as Record<string, unknown>).seconds,
+            ptt: (message.audioMessage as Record<string, unknown>).ptt,
+            hasWaveform: !!(message.audioMessage as Record<string, unknown>).waveform,
+            waveformLen: ((message.audioMessage as Record<string, unknown>).waveform as Buffer | undefined)?.length,
+            fileLength: (message.audioMessage as Record<string, unknown>).fileLength,
+            hasUrl: !!(message.audioMessage as Record<string, unknown>).url,
+            hasDirectPath: !!(message.audioMessage as Record<string, unknown>).directPath,
+          },
+          'outgoing audioMessage fields',
+        );
         break;
+      }
     }
 
     return this.sendWAMessage(jid, message, 'text', opts.contextInfo);
@@ -2577,6 +3590,9 @@ export class WaClient extends EventEmitter {
       messageId: string;
       emoji: string;
       fromMe?: boolean;
+      /** Group reactions must name the original sender in key.participant
+       *  or recipients silently drop the stanza. */
+      participant?: string;
     },
   ): Promise<{ id: string }> {
     const destinationJid = jid.includes('@')
@@ -2598,6 +3614,7 @@ export class WaClient extends EventEmitter {
             remoteJid: form,
             fromMe: opts.fromMe ?? false,
             id: opts.messageId,
+            ...(opts.participant ? { participant: opts.participant } : {}),
           },
           text: opts.emoji,
           senderTimestampMs: Date.now(),
@@ -2668,6 +3685,91 @@ export class WaClient extends EventEmitter {
     return lastId;
   }
 
+  /**
+   * Pin / unpin a message inside a chat — proto.pinInChatMessage sent as a
+   * normal stanza, exactly like WhatsApp Web's "Pin message". The duration
+   * itself is a client-side concern; the stanza only carries the key.
+   */
+  public async sendPinMessage(
+    jid: string,
+    opts: {
+      action: 'pin' | 'unpin';
+      messageId: string;
+      fromMe?: boolean;
+      participant?: string;
+    },
+  ): Promise<{ id: string }> {
+    const destinationJid = jid.includes('@')
+      ? jid
+      : jidEncode(jid.replace(/\D/g, ''), 's.whatsapp.net');
+
+    // Same LID rule as sendRevokeMessage: when the chat is LID-migrated the
+    // key's remoteJid must carry the @lid form — a PN key under a LID `to`
+    // gets the stanza bounced (ack 479).
+    let stanzaTo = destinationJid;
+    try {
+      const counterpart = (await this.resolveLidUsers([destinationJid])).get(
+        destinationJid,
+      );
+      if (counterpart && !destinationJid.endsWith('@lid')) {
+        stanzaTo = counterpart;
+      }
+    } catch { /* resolution is best-effort */ }
+
+    // key.participant needs a FULL jid — callers pass bare `from` digits for
+    // group senders; restore the server suffix before wiring it in.
+    let participant: string | undefined;
+    if (opts.participant) {
+      const d = String(opts.participant).replace(/\D/g, '');
+      participant = opts.participant.includes('@')
+        ? String(opts.participant)
+        : jidEncode(d, d.length >= 15 ? 'lid' : 's.whatsapp.net');
+    }
+
+    // The pinned key may be keyed under EITHER the author's PN or LID form
+    // (same lesson as revokes) — try every candidate form; a non-matching
+    // key is silently ignored / errors out, a matching one applies.
+    const jidCandidates = new Set<string>([stanzaTo, destinationJid]);
+    const participantForms: (string | undefined)[] = [participant];
+    if (participant) {
+      try {
+        const cp = (await this.resolveLidUsers([participant])).get(participant);
+        if (cp && cp !== participant) participantForms.push(cp);
+      } catch { /* best effort */ }
+    }
+
+    let lastId = { id: '' };
+    let lastErr: unknown;
+    for (const remoteJid of jidCandidates) {
+      for (const pForm of participantForms) {
+        try {
+          const message = {
+            pinInChatMessage: {
+              key: {
+                remoteJid,
+                fromMe: opts.fromMe ?? true,
+                id: opts.messageId,
+                ...(pForm ? { participant: pForm } : {}),
+              },
+              type: opts.action === 'unpin' ? 2 /* UNPIN_FOR_ALL */ : 1 /* PIN_FOR_ALL */,
+              senderTimestampMs: Date.now(),
+            },
+          };
+          const r = await this.sendWAMessage(stanzaTo, message, 'text');
+          if (r?.id) {
+            logger.info({ to: stanzaTo, remoteJid, participant: pForm, ...opts }, 'pin stanza sent');
+            return r;
+          }
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+    }
+    if (!lastId.id && lastErr) throw lastErr;
+    logger.info({ to: stanzaTo, ...opts }, 'pin stanza sent');
+    return lastId;
+  }
+
   // ------------------------------------------------------------------
   // Keepalive / shutdown
   // ------------------------------------------------------------------
@@ -2707,7 +3809,8 @@ export class WaClient extends EventEmitter {
    * One-time prekeys kept locally (for pkmsg decrypt of retried messages).
    * Unbounded growth livelocked the engine — see sendRetryRequest.
    */
-  private static readonly MAX_STORED_PREKEYS = 500;
+  private static readonly MAX_STORED_RETRY_PREKEYS = 512;
+  private static readonly MAX_STORED_BULK_PREKEYS = 8192;
 
   /**
    * creds persistence is a synchronous write of the whole JSON blob —

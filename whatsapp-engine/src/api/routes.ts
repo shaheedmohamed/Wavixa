@@ -153,8 +153,58 @@ export function createRoutes(deps: RouteDependencies): express.Router {
             isGroup,
             replyToId: msg.quotedMessageId,
             isForwarded: (msg as any).isForwarded || false,
+            mentionedJids: (msg as any).mentionedJids || [],
+            pin: (msg as any).pin || null,
             msgTimestamp: msg.timestamp,
           },
+        });
+      });
+
+      session.onChatPinned((r) => {
+        eventBus.emit('chat.pinned', {
+          event: 'chat.pinned',
+          session_id: sessionId,
+          message_id: '',
+          from: r.jid,
+          timestamp: Math.floor(Date.now() / 1000),
+          data: { pinned: r.pinned !== false },
+        });
+      });
+
+      session.onChatArchived((r) => {
+        eventBus.emit('chat.archived', {
+          event: 'chat.archived',
+          session_id: sessionId,
+          message_id: '',
+          from: r.jid,
+          timestamp: Math.floor(Date.now() / 1000),
+          data: { archived: r.archived !== false },
+        });
+      });
+
+      // "Read on the phone" (app-state markChatAsRead / read-self receipt) → zero the unread badge.
+      session.onChatRead((r) => {
+        eventBus.emit('chat.read', {
+          event: 'chat.read',
+          session_id: sessionId,
+          message_id: '',
+          from: r.jid,
+          timestamp: Math.floor(Date.now() / 1000),
+          data: {
+            read: r.read !== false,
+            lidJid: r.lidJid,
+            lastMessageTimestamp: r.lastMessageTimestamp,
+          },
+        });
+      });
+
+      session.onChatReadReconcile((r) => {
+        eventBus.emit('chats.read_reconcile', {
+          event: 'chats.read_reconcile',
+          session_id: sessionId,
+          message_id: '',
+          timestamp: Math.floor(Date.now() / 1000),
+          data: { reads: r.reads || [] },
         });
       });
 
@@ -180,7 +230,7 @@ export function createRoutes(deps: RouteDependencies): express.Router {
             const type = node.attrs.type;
             // 'retry' receipts ask us to re-encrypt — handled in WaClient; they
             // are not a delivery confirmation and must not flip message status.
-            if (type === 'retry' || type === 'mediaretry' || type === 'server-error') return;
+            if (type === 'retry' || type === 'mediaretry' || type === 'server-error' || type === 'read-self') return;
             const status =
               type === 'read' || type === 'played' ? 'read' : 'delivered';
             eventBus.emit('message.status', {
@@ -654,11 +704,17 @@ export function createRoutes(deps: RouteDependencies): express.Router {
       contextInfo.isForwarded = true;
       contextInfo.forwardingScore = 1;
     }
+    // @mentions — proto.ContextInfo.mentionedJid. The text carries the bare
+    // "@<digits>" token; clients resolve the listed JIDs to display names.
+    if (Array.isArray(req.body.mentions) && req.body.mentions.length) {
+      contextInfo.mentionedJid = req.body.mentions.map(String).slice(0, 50);
+    }
     const hasCtx = Object.keys(contextInfo).length > 0;
 
     try {
       let result: { id: string };
       let messageLabel: string;
+      let outboundMediaUrl: string | null = null;
 
       if (msgType === 'contact') {
         const displayName =
@@ -690,10 +746,15 @@ export function createRoutes(deps: RouteDependencies): express.Router {
         messageLabel = textContent;
       } else {
         const media = await resolveMediaBuffer(content);
+        const finalMime = mimeType || media.mimetype;
+        // Keep a local copy so the CRM bubble stays playable — the
+        // message-sent webhook is the only row writer for engine-side
+        // sends and it has no other way to reach these bytes.
+        outboundMediaUrl = MediaManager.saveLocalCopy(media.buffer, msgType, finalMime);
         result = await session.sendMediaMessage(to, {
           type: msgType as 'image' | 'video' | 'document' | 'audio' | 'voice',
           buffer: media.buffer,
-          mimetype: mimeType || media.mimetype,
+          mimetype: finalMime,
           caption,
           fileName,
           seconds: typeof seconds === 'number' ? seconds : undefined,
@@ -714,6 +775,7 @@ export function createRoutes(deps: RouteDependencies): express.Router {
         data: {
           message: messageLabel,
           messageType: msgType,
+          ...(outboundMediaUrl ? { mediaUrl: outboundMediaUrl } : {}),
         },
       });
 
@@ -732,7 +794,7 @@ export function createRoutes(deps: RouteDependencies): express.Router {
 
   // Send Reaction endpoint
   router.post(['/internal/messages/reaction', '/api/whatsapp/send-reaction'], async (req: Request, res: Response) => {
-    const { userId, sessionId: reqSessionId, to, messageId, emoji, fromMe } = req.body;
+    const { userId, sessionId: reqSessionId, to, messageId, emoji, fromMe, participant } = req.body;
     const sessionId = reqSessionId || String(userId);
 
     if (!sessionId || !to || !messageId) {
@@ -755,6 +817,7 @@ export function createRoutes(deps: RouteDependencies): express.Router {
         messageId,
         emoji: emoji ?? '',
         fromMe: Boolean(fromMe),
+        participant: typeof participant === 'string' && participant ? participant : undefined,
       });
 
       res.json({
@@ -805,7 +868,54 @@ export function createRoutes(deps: RouteDependencies): express.Router {
    * lazily resolve media for history-synced messages — the mediaKey arrives
    * base64-encoded.
    */
-  router.post('/internal/media/download', async (req: Request, res: Response) => {
+  router.post('/internal/prekeys/refresh', async (req: Request, res: Response) => {
+    const { sessionId: reqSessionId, userId, count } = req.body || {};
+    const sessionId = String(reqSessionId || userId || '');
+    if (!sessionId) {
+      res.status(400).json({ success: false, message: 'sessionId is required' });
+      return;
+    }
+    const session = activeSessions.get(sessionId);
+    const sessionState = session?.getState();
+    if (!session || !session.getClient() || (sessionState !== 'READY' && sessionState !== 'CONNECTED')) {
+      res.status(409).json({ success: false, message: 'Session is not connected to WhatsApp' });
+      return;
+    }
+    try {
+      const uploaded = await session.getClient()!.refreshServerPreKeys(count ? Number(count) : 812);
+      res.json({ success: true, uploaded });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err instanceof Error ? err.message : 'Prekey refresh failed' });
+    }
+  });
+
+  router.post('/internal/pin', async (req: Request, res: Response) => {
+    const { sessionId: reqSessionId, userId, to, messageId, fromMe, participant, action } = req.body || {};
+    const sessionId = String(reqSessionId || userId || '');
+    if (!sessionId || !to || !messageId) {
+      res.status(400).json({ success: false, message: 'sessionId, to, and messageId are required' });
+      return;
+    }
+    const session = activeSessions.get(sessionId);
+    const sessionState = session?.getState();
+    if (!session || !session.getClient() || (sessionState !== 'READY' && sessionState !== 'CONNECTED')) {
+      res.status(409).json({ success: false, message: 'Session is not connected to WhatsApp' });
+      return;
+    }
+    try {
+      const r = await session.getClient()!.sendPinMessage(String(to), {
+        action: action === 'unpin' ? 'unpin' : 'pin',
+        messageId: String(messageId),
+        fromMe: fromMe !== false,
+        participant: participant ? String(participant) : undefined,
+      });
+      res.json({ success: true, id: r?.id });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err instanceof Error ? err.message : 'Pin failed' });
+    }
+  });
+
+    router.post('/internal/media/download', async (req: Request, res: Response) => {
     const { mediaKey, directPath, url, type, mimetype } = req.body || {};
     if (!mediaKey || (!directPath && !url)) {
       res.status(400).json({ success: false, message: 'mediaKey and directPath/url are required' });
@@ -886,6 +996,215 @@ export function createRoutes(deps: RouteDependencies): express.Router {
         message: err instanceof Error ? err.message : 'LID resolution failed',
       });
     }
+  });
+
+  // Group metadata — subject, owner and the live participant list with
+  // admin flags (w:g2 info query). Used by the CRM group-info panel and the
+  // members export.
+  router.post('/internal/group/metadata', async (req: Request, res: Response) => {
+    const sessionId = String(req.body.sessionId || req.body.userId || '');
+    const jid = String(req.body.jid || '');
+    if (!sessionId || !jid) {
+      res.status(400).json({ success: false, message: 'sessionId and jid are required' });
+      return;
+    }
+    const session = activeSessions.get(sessionId);
+    const sessionState = session?.getState();
+    if (!session || (sessionState !== 'READY' && sessionState !== 'CONNECTED')) {
+      res.status(409).json({
+        success: false,
+        message: `Session is not connected (state: ${sessionState || 'missing'})`,
+      });
+      return;
+    }
+    const client = session.getClient();
+    if (!client) {
+      res.status(409).json({ success: false, message: 'Client not initialized' });
+      return;
+    }
+    try {
+      const meta = await client.getGroupMetadata(jid);
+      res.json({ success: true, ...meta });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        message: err instanceof Error ? err.message : 'Group metadata failed',
+      });
+    }
+  });
+
+  // Group creation — the real w:g2 <create> set-query WhatsApp Web sends
+  // from its "New group" flow, plus the same follow-up settings stanzas
+  // (announcement/locked/ephemeral/approval mode) and the profile-picture
+  // upload. Returns the new group JID plus per-participant add results so
+  // the CRM can flag numbers WhatsApp refused (privacy / not registered).
+  router.post(['/internal/group/create', '/api/whatsapp/create-group'], async (req: Request, res: Response) => {
+    const sessionId = String(req.body.sessionId || req.body.userId || '');
+    const subject = String(req.body.subject || '').trim().slice(0, 128);
+    const participants: string[] = Array.isArray(req.body.participants)
+      ? req.body.participants.map(String)
+      : [];
+
+    if (!sessionId || !subject || !participants.length) {
+      res.status(400).json({
+        success: false,
+        message: 'sessionId, subject and participants are required',
+      });
+      return;
+    }
+
+    const session = activeSessions.get(sessionId);
+    const sessionState = session?.getState();
+    if (!session || (sessionState !== 'READY' && sessionState !== 'CONNECTED')) {
+      res.status(409).json({
+        success: false,
+        message: `Session is not connected (state: ${sessionState || 'missing'})`,
+      });
+      return;
+    }
+    const client = session.getClient();
+    if (!client) {
+      res.status(409).json({ success: false, message: 'Client not initialized' });
+      return;
+    }
+
+    try {
+      const meta = await client.createGroup(subject, participants.slice(0, 1024));
+      const gid = meta.id;
+      const warnings: string[] = [];
+
+      // Optional follow-up settings — same iq stanzas WhatsApp Web sends
+      // when you flip the toggles on the group-info screen. Failures are
+      // reported as warnings; the group itself is already created.
+      const tryStep = async (label: string, fn: () => Promise<void>) => {
+        try {
+          await fn();
+        } catch (err) {
+          warnings.push(`${label}: ${err instanceof Error ? err.message : 'failed'}`);
+        }
+      };
+
+      if (req.body.announceOnly) {
+        await tryStep('announcement', () => client.updateGroupSetting(gid, 'announcement'));
+      }
+      if (req.body.infoEditAdminsOnly) {
+        await tryStep('locked', () => client.updateGroupSetting(gid, 'locked'));
+      }
+      if (req.body.approvalMode) {
+        await tryStep('membership_approval', () =>
+          client.updateGroupSetting(gid, 'membership_approval_mode', 'on'),
+        );
+      }
+      if (req.body.memberAddMode === 'admin_add' || req.body.memberAddMode === 'all_member_add') {
+        await tryStep('member_add_mode', () =>
+          client.updateGroupSetting(gid, 'member_add_mode', String(req.body.memberAddMode)),
+        );
+      }
+      const ephemeral = Number(req.body.ephemeral ?? 0);
+      if (Number.isFinite(ephemeral) && ephemeral > 0) {
+        await tryStep('ephemeral', () => client.updateGroupEphemeral(gid, ephemeral));
+      }
+      if (typeof req.body.picture === 'string' && req.body.picture.length > 0) {
+        try {
+          const jpeg = Buffer.from(req.body.picture.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+          if (jpeg.length > 0 && jpeg.length <= 5 * 1024 * 1024) {
+            await tryStep('picture', () => client.updateGroupPicture(gid, jpeg));
+          }
+        } catch {
+          warnings.push('picture: invalid image data');
+        }
+      }
+
+      res.json({
+        success: true,
+        group: meta,
+        jid: gid,
+        warnings,
+      });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        message: err instanceof Error ? err.message : 'Group create failed',
+      });
+    }
+  });
+
+  // Update an existing group — subject, picture and the same settings
+  // toggles WhatsApp Web exposes on the group-info screen.
+  router.post('/internal/group/update', async (req: Request, res: Response) => {
+    const sessionId = String(req.body.sessionId || req.body.userId || '');
+    const jid = String(req.body.jid || '');
+    if (!sessionId || !jid.endsWith('@g.us')) {
+      res.status(400).json({ success: false, message: 'sessionId and a @g.us jid are required' });
+      return;
+    }
+    const session = activeSessions.get(sessionId);
+    const sessionState = session?.getState();
+    if (!session || (sessionState !== 'READY' && sessionState !== 'CONNECTED')) {
+      res.status(409).json({
+        success: false,
+        message: `Session is not connected (state: ${sessionState || 'missing'})`,
+      });
+      return;
+    }
+    const client = session.getClient();
+    if (!client) {
+      res.status(409).json({ success: false, message: 'Client not initialized' });
+      return;
+    }
+
+    const warnings: string[] = [];
+    const applied: string[] = [];
+    const tryStep = async (label: string, fn: () => Promise<void>) => {
+      try {
+        await fn();
+        applied.push(label);
+      } catch (err) {
+        warnings.push(`${label}: ${err instanceof Error ? err.message : 'failed'}`);
+      }
+    };
+
+    if (typeof req.body.subject === 'string' && req.body.subject.trim()) {
+      await tryStep('subject', () => client.updateGroupSubject(jid, req.body.subject.trim().slice(0, 128)));
+    }
+    if (typeof req.body.announceOnly === 'boolean') {
+      await tryStep('announcement', () =>
+        client.updateGroupSetting(jid, req.body.announceOnly ? 'announcement' : 'not_announcement'),
+      );
+    }
+    if (typeof req.body.infoEditAdminsOnly === 'boolean') {
+      await tryStep('locked', () =>
+        client.updateGroupSetting(jid, req.body.infoEditAdminsOnly ? 'locked' : 'unlocked'),
+      );
+    }
+    if (typeof req.body.approvalMode === 'boolean') {
+      await tryStep('membership_approval', () =>
+        client.updateGroupSetting(jid, 'membership_approval_mode', req.body.approvalMode ? 'on' : 'off'),
+      );
+    }
+    if (req.body.memberAddMode === 'admin_add' || req.body.memberAddMode === 'all_member_add') {
+      await tryStep('member_add_mode', () =>
+        client.updateGroupSetting(jid, 'member_add_mode', String(req.body.memberAddMode)),
+      );
+    }
+    if (req.body.ephemeral !== undefined && req.body.ephemeral !== null) {
+      const ephemeral = Number(req.body.ephemeral);
+      if (Number.isFinite(ephemeral) && ephemeral >= 0) {
+        await tryStep('ephemeral', () => client.updateGroupEphemeral(jid, ephemeral));
+      }
+    }
+    if (typeof req.body.picture === 'string' && req.body.picture.length > 0) {
+      try {
+        const jpeg = Buffer.from(req.body.picture.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+        if (jpeg.length > 0 && jpeg.length <= 5 * 1024 * 1024) {
+          await tryStep('picture', () => client.updateGroupPicture(jid, jpeg));
+        }
+      } catch {
+        warnings.push('picture: invalid image data');
+      }
+    }
+
+    res.json({ success: true, jid, applied, warnings });
   });
 
   // Resolve profile picture URLs for a batch of JIDs via usync 'picture'.
@@ -1093,12 +1412,50 @@ export function createRoutes(deps: RouteDependencies): express.Router {
     }
     const chatJid = String(req.body.chatJid || req.body.to || '');
     const ids = Array.isArray(req.body.messageIds) ? req.body.messageIds.map(String) : [];
-    if (!chatJid || !ids.length) {
-      res.status(422).json({ success: false, message: 'chatJid and messageIds are required' });
+    if (!chatJid) {
+      res.status(422).json({ success: false, message: 'chatJid is required' });
       return;
     }
-    await session.sendReadReceipt(chatJid, ids.slice(0, 50), req.body.participant);
+    // Empty messageIds is valid: skip the tick-blueing receipt but still run
+    // the markChatAsRead mutation below — replying in a chat clears the
+    // phone's unread badge even when every incoming message already got a
+    // receipt (or was phone-flagged unread with nothing new to receipt).
+    if (ids.length) {
+      await session.sendReadReceipt(chatJid, ids.slice(0, 50), req.body.participant);
+    }
+    // The receipt only blues the sender's ticks — the unread badge on the
+    // owner's phone clears via the markChatAsRead app-state mutation.
+    void session.markChatAsRead(chatJid).catch((err) =>
+      logger.warn(
+        {
+          err: (err as Error)?.message,
+          errAttrs: (err as { node?: { content?: unknown } })?.node?.content,
+          sessionId,
+          chatJid,
+        },
+        'markChatAsRead app-state write failed',
+      ),
+    );
     res.json({ success: true });
+  });
+
+  // Reconcile phone-side read state from regular_low app-state collection
+  router.post('/internal/chats/sync-reads', async (req: Request, res: Response) => {
+    const sessionId = String(req.body.sessionId || req.body.userId || '');
+    const session = activeSessions.get(sessionId);
+    if (!session) {
+      res.status(409).json({ success: false, message: 'WhatsApp session is not connected' });
+      return;
+    }
+    try {
+      const reads = await session.reconcileReadStates();
+      res.json({ success: true, count: reads.length });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        message: err instanceof Error ? err.message : 'Read reconciliation failed',
+      });
+    }
   });
 
   // Restore persisted (paired) sessions on boot — reconnect them staggered

@@ -51,6 +51,17 @@ export type ContactsSyncCallback = (payload: {
 }) => void;
 export type DisconnectedCallback = (info: { reason?: string; loggedOut?: boolean }) => void;
 export type QrCallback = (qr: SessionQrState) => void;
+export type ChatReadCallback = (data: {
+  jid: string;
+  lidJid?: string;
+  read: boolean;
+  lastMessageTimestamp?: number;
+}) => void;
+export type ChatReadReconcileCallback = (data: {
+  reads: Array<{ jid: string; lidJid?: string; read: boolean; lastMessageTimestamp?: number }>;
+}) => void;
+export type ChatArchivedCallback = (data: { jid: string; archived: boolean }) => void;
+export type ChatPinnedCallback = (data: { jid: string; pinned: boolean }) => void;
 
 export interface SessionQrState {
   raw: string;
@@ -88,6 +99,10 @@ export class Session {
   private historySyncCallbacks: HistorySyncCallback[] = [];
   private revokedCallbacks: RevokedCallback[] = [];
   private contactsSyncCallbacks: ContactsSyncCallback[] = [];
+  private chatReadCallbacks: ChatReadCallback[] = [];
+  private chatReadReconcileCallbacks: ChatReadReconcileCallback[] = [];
+  private chatArchivedCallbacks: ChatArchivedCallback[] = [];
+  private chatPinnedCallbacks: ChatPinnedCallback[] = [];
   private leaseTimer: NodeJS.Timeout | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectAttempts = 0;
@@ -163,6 +178,26 @@ export class Session {
   /** Fired when the owner's address book is decoded from app-state sync. */
   public onContactsSync(callback: ContactsSyncCallback): void {
     this.contactsSyncCallbacks.push(callback);
+  }
+
+  /** Fires when a chat is marked read/unread on another device (app-state patch). */
+  public onChatRead(callback: ChatReadCallback): void {
+    this.chatReadCallbacks.push(callback);
+  }
+
+  /** Fires on full regular_low read-state reconciliation. */
+  public onChatReadReconcile(callback: ChatReadReconcileCallback): void {
+    this.chatReadReconcileCallbacks.push(callback);
+  }
+
+  /** Fires when a chat is archived/unarchived on another device (app-state patch). */
+  public onChatArchived(callback: ChatArchivedCallback): void {
+    this.chatArchivedCallbacks.push(callback);
+  }
+
+  /** Fires when a chat is pinned/unpinned on another device (app-state patch). */
+  public onChatPinned(callback: ChatPinnedCallback): void {
+    this.chatPinnedCallbacks.push(callback);
   }
 
   /**
@@ -320,6 +355,49 @@ export class Session {
       for (const cb of this.contactsSyncCallbacks) {
         try {
           cb(payload);
+        } catch {
+          // isolate callback errors
+        }
+      }
+    });
+
+    // App-state chat mutations (read/archive/pin on another device). These
+    // MUST be bridged here — wiring them in routes via getClient() raced
+    // connect() and silently never attached (client is null pre-connect).
+    client.on('chat.read', (r) => {
+      for (const cb of this.chatReadCallbacks) {
+        try {
+          cb(r);
+        } catch {
+          // isolate callback errors
+        }
+      }
+    });
+
+    client.on('chats.read_reconcile', (r) => {
+      for (const cb of this.chatReadReconcileCallbacks) {
+        try {
+          cb(r);
+        } catch {
+          // isolate callback errors
+        }
+      }
+    });
+
+    client.on('chat.archived', (r) => {
+      for (const cb of this.chatArchivedCallbacks) {
+        try {
+          cb(r);
+        } catch {
+          // isolate callback errors
+        }
+      }
+    });
+
+    client.on('chat.pinned', (r) => {
+      for (const cb of this.chatPinnedCallbacks) {
+        try {
+          cb(r);
         } catch {
           // isolate callback errors
         }
@@ -560,7 +638,7 @@ export class Session {
    */
   public async sendReactionMessage(
     to: string,
-    opts: { messageId: string; emoji: string; fromMe?: boolean },
+    opts: { messageId: string; emoji: string; fromMe?: boolean; participant?: string },
   ): Promise<{ id: string }> {
     const state = this.stateMachine.getState();
     if (state !== 'READY' && state !== 'CONNECTED') {
@@ -693,6 +771,27 @@ export class Session {
       return;
     }
     await this.waClient.sendReadReceipt(chatJid, messageIds, participant);
+  }
+
+  /**
+   * Write the markChatAsRead app-state mutation — clears the unread badge
+   * on the owner's other devices (the phone app). Read receipts alone only
+   * tick the sender.
+   */
+  public async markChatAsRead(chatJid: string, read = true): Promise<void> {
+    if (!this.waClient || !this.waClient.isOpen) {
+      return;
+    }
+    await this.waClient.markChatAsRead(chatJid, read);
+  }
+
+  public async reconcileReadStates(): Promise<
+    Array<{ jid: string; lidJid?: string; read: boolean; lastMessageTimestamp?: number }>
+  > {
+    if (!this.waClient || !this.waClient.isOpen) {
+      return [];
+    }
+    return this.waClient.reconcileReadStates();
   }
 
   /**
