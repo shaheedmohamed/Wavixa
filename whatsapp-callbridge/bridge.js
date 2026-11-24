@@ -1274,15 +1274,20 @@ setInterval(async () => {
   try {
     // /login/ pairing fallback — keep the scraped QR fresh (refs rotate
     // every ~60s) and re-run inject() once the post-scan navigation lands
-    // on the real app page, where the socket model exists.
-    if (!sessionReady) {
+    // on the real app page, where the socket model exists. Runs even when
+    // sessionReady is true: the phone can unlink us post-READY (or a
+    // mid-pairing reload bounces back here) and wweb.js never emits
+    // 'disconnected' for that — /state would stay ready:true forever and
+    // dials would silently fail.
+    {
       try {
         const p = client.pupPage;
         const onLogin = await withTimeout(
           p.evaluate("location.pathname.indexOf('/login') === 0").catch(() => false), 8000);
         if (onLogin) {
+          if (sessionReady) { sessionReady = false; waOnline = false; log('back on /login/ — session unpaired'); }
           await scrapeLoginQr();
-        } else if (loginQrScraped && Date.now() - lastReinjectTry > 30000) {
+        } else if (loginQrScraped && !sessionReady && Date.now() - lastReinjectTry > 30000) {
           lastReinjectTry = Date.now();
           log('login page navigated — re-running inject');
           client.inject()
@@ -1318,7 +1323,7 @@ setInterval(async () => {
       setCallState('idle', { reason: 'dial-timeout', peer });
     }
     for (const p of await client.pupBrowser.pages()) {
-      if (!/web\.whatsapp\.com/.test(p.url())) continue;
+      if (!/web\.whatsapp\.com/.test(p.url()) || /\/login/.test(p.url())) continue;
       const r = await p.evaluate('try{window.__cbInstallWalog&&window.__cbInstallWalog()}catch(e){String(e)}').catch(() => null);
       if (r && r !== 'already' && r !== 'no-require') log('walog:', r);
       // keep the page's direct audio WS alive across reloads
@@ -1330,8 +1335,11 @@ setInterval(async () => {
         C && C.audioWs ? C.audioWs.readyState : -1
       }catch(e){-2}`).catch(() => null);
       // CSP bypass only applies to documents loaded after it was set — if the
-      // page WS still can't open after ~20s, reload once so it takes effect.
-      if (sessionReady && !pageSockets.size && wsState !== 0 && wsState !== 1 && !cspReloadTried && Date.now() - readyAt > 20000) {
+      // page WS still can't open after ~2min, reload once so it takes effect.
+      // (Was 20s: a fresh pairing is still syncing at that point and the
+      // reload bounces the page back to /login/, losing the just-scanned
+      // link — this is what unpaired the pharmacy bridge on 2026-11-24.)
+      if (sessionReady && !pageSockets.size && wsState !== 0 && wsState !== 1 && !cspReloadTried && Date.now() - readyAt > 120000) {
         cspReloadTried = true;
         log('page audio WS down — reloading once so CSP bypass applies');
         p.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
