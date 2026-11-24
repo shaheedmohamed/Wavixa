@@ -789,6 +789,39 @@ async function webhook(payload) {
   } catch (e) { if (payload.event === 'state') log('webhook err', e.message); }
 }
 
+// Call-collection probe — WALOG-independent incoming detection. WA's
+// WAWebCallCollection.pendingOffers holds live inbound offers; an offer
+// sitting there while we're idle is a ringing inbound call. WALOG console
+// strings (`call_state_changed:ReceivedCall` etc.) are still handled in
+// onConsoleLine but appear to be gone from current WA builds — this probe
+// is now the primary inbound path.
+function handleCallProbe(cs) {
+  if (!cs) return;
+  const offer = (cs.offers || []).find((o) => o && !o.outgoing && !o.group && !o.silenced);
+  if (offer && callState === 'idle' && Date.now() > callEventsMutedUntil) {
+    // ignore offers replayed after a reconnect — only fresh ones ring
+    if (!offer.t || Date.now() - offer.t < 90000) {
+      callDirection = 'in';
+      if (offer.jid) {
+        const m = String(offer.jid).match(/(\d+)[@:]/);
+        if (m) callPeer = m[1];
+      }
+      callIsVideo = !!offer.video;
+      setCallState('incoming', { peer: callPeer, video: callIsVideo });
+    }
+    return;
+  }
+  // offer gone while ringing → caller hung up / answered elsewhere → missed
+  if (!offer && callState === 'incoming') {
+    const peer = callPeer; callPeer = null; callMuted = false;
+    setCallState('idle', { reason: 'terminated', peer });
+    return;
+  }
+  if (cs.inCall && (callState === 'incoming' || callState === 'ringing' || callState === 'connecting')) {
+    setCallState('active');
+  }
+}
+
 // Console line → lifecycle events
 function onConsoleLine(text) {
   const t = text;
@@ -1093,6 +1126,62 @@ async function doMute(m) {
 }
 
 // ---------------------------------------------------------------------------
+// /login/ landing fallback — unpaired profiles are served WA's logged-out
+// landing bundle where wweb.js' auth flow can't run (no WAWebSocketModel,
+// no signal store). The QR it renders is still a real pairing QR, so we
+// scrape it into OUT_DIR/qr.png for the app to display, keep the browser
+// alive for the scan, and re-run inject() once the post-scan navigation
+// lands on the real app page.
+// ---------------------------------------------------------------------------
+let loginQrScraped = false;
+let lastReinjectTry = 0;
+
+async function scrapeLoginQr() {
+  try {
+    if (!client || !client.pupPage) return false;
+    const page = client.pupPage;
+    const info = await page.evaluate(`(() => {
+      if (location.pathname.indexOf('/login') !== 0) return { onLogin: false };
+      const c = document.querySelector('canvas');
+      if (c && c.width > 50) {
+        try { return { onLogin: true, kind: 'canvas', dataUrl: c.toDataURL('image/png') }; } catch (e) {}
+      }
+      const d = document.querySelector('[data-ref]') || document.querySelector('svg') || document.querySelector('img');
+      if (d) {
+        const r = d.getBoundingClientRect();
+        if (r.width > 50) return { onLogin: true, kind: 'dom', rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
+      }
+      return { onLogin: true, kind: 'none' };
+    })()`).catch(() => null);
+    if (!info || !info.onLogin) return false;
+    if (info.kind === 'canvas') {
+      const b64 = info.dataUrl.split(',')[1];
+      if (!b64 || b64 === scrapeLoginQr._last) return true;
+      scrapeLoginQr._last = b64;
+      fs.writeFileSync(path.join(OUT_DIR, 'qr.png'), Buffer.from(b64, 'base64'));
+      fs.writeFileSync(path.join(OUT_DIR, 'qr.txt'), 'login-page-qr');
+      currentQr = 'login-page-qr';
+      log('login-page QR scraped (canvas)');
+      return true;
+    }
+    if (info.kind === 'dom' && info.rect) {
+      const pad = 16;
+      await page.screenshot({
+        path: path.join(OUT_DIR, 'qr.png'),
+        clip: {
+          x: Math.max(0, info.rect.x - pad), y: Math.max(0, info.rect.y - pad),
+          width: info.rect.w + pad * 2, height: info.rect.h + pad * 2,
+        },
+      }).catch(() => {});
+      fs.writeFileSync(path.join(OUT_DIR, 'qr.txt'), 'login-page-qr');
+      currentQr = 'login-page-qr';
+      log('login-page QR scraped (element shot)');
+    }
+    return true; // onLogin — keep the browser even if no QR scraped yet
+  } catch (e) { return false; }
+}
+
+// ---------------------------------------------------------------------------
 // Browser boot
 // ---------------------------------------------------------------------------
 async function bootClient(attempt = 0) {
@@ -1162,7 +1251,14 @@ async function bootClient(attempt = 0) {
     await client.initialize();
     log('client.initialize resolved');
   } catch (e) {
-    log('initialize attempt', attempt + 1, 'failed:', e.message.slice(0, 120));
+    log('initialize attempt', attempt + 1, 'failed:', e.message.slice(0, 120), (e.stack || '').split('\n')[1] || '');
+    // /login/ landing → pairing is still possible through the scraped QR;
+    // keep this browser alive for the scan instead of churning retries.
+    if (await scrapeLoginQr()) {
+      loginQrScraped = true;
+      log('keeping /login/ browser alive for QR pairing');
+      return;
+    }
     if (attempt + 1 >= 10) { log('initialize gave up after 10 attempts'); return; }
     const old = client; client = null;
     try { await withTimeout(old.destroy(), 15000); } catch {}
@@ -1176,6 +1272,45 @@ async function bootClient(attempt = 0) {
 setInterval(async () => {
   if (!client || !client.pupPage) return;
   try {
+    // /login/ pairing fallback — keep the scraped QR fresh (refs rotate
+    // every ~60s) and re-run inject() once the post-scan navigation lands
+    // on the real app page, where the socket model exists.
+    if (!sessionReady) {
+      try {
+        const p = client.pupPage;
+        const onLogin = await withTimeout(
+          p.evaluate("location.pathname.indexOf('/login') === 0").catch(() => false), 8000);
+        if (onLogin) {
+          await scrapeLoginQr();
+        } else if (loginQrScraped && Date.now() - lastReinjectTry > 30000) {
+          lastReinjectTry = Date.now();
+          log('login page navigated — re-running inject');
+          client.inject()
+            .then(() => log('post-pairing inject resolved'))
+            .catch((e) => log('post-pairing inject failed:', String(e && e.message || e).slice(0, 120)));
+        }
+      } catch (e) {}
+    }
+    // WALOG-independent call-state probe (see handleCallProbe).
+    if (sessionReady) {
+      try {
+        const cs = await withTimeout(client.pupPage.evaluate(`(() => {
+          try {
+            const C = window.require('WAWebCallCollection');
+            const raw = C.pendingOffers;
+            const offers = raw && raw.models ? raw.models : (Array.isArray(raw) ? raw : (raw && typeof raw === 'object' ? Object.values(raw) : []));
+            return {
+              offers: offers.map((o) => {
+                const j = o && (o.peerJid && (o.peerJid._serialized || o.peerJid.user || o.peerJid)) || null;
+                return { jid: j && String(j), video: !!(o && o.isVideo), group: !!(o && o.isGroup), outgoing: !!(o && o.outgoing), silenced: !!(o && o.isSilenced), t: (o && o.offerTime) || 0 };
+              }),
+              inCall: !!C.isInConnectedCall,
+            };
+          } catch (e) { return null; }
+        })()`), 8000).catch(() => null);
+        if (cs) handleCallProbe(cs);
+      } catch (e) {}
+    }
     // a dial that never reached the peer (dead socket, navigation crash)
     // leaves callState stuck in 'dialing' forever — sweep it.
     if (callState === 'dialing' && Date.now() - dialStartedAt > 90000) {
@@ -1284,7 +1419,8 @@ setInterval(async () => {
 // HTTP + WS API
 // ---------------------------------------------------------------------------
 async function main() {
-  await bootClient();
+  // non-blocking — the API must answer /state and /qr while init retries
+  bootClient().catch((e) => log('boot failed', e.message));
   const app = express();
   app.use(express.json({ limit: '8mb' }));
 
