@@ -23,6 +23,8 @@ export interface NormalizedMessage {
   media?: NormalizedMedia;
   quotedMessageId?: string;
   quotedParticipant?: string;
+  mentionedJids?: string[];
+  pin?: { action: 'pin' | 'unpin'; messageId?: string; remoteJid?: string };
   isForwarded?: boolean;
   edited?: boolean;
   fromMe?: boolean;
@@ -50,10 +52,16 @@ export interface ParsedHistorySync {
     unreadCount?: number;
     lastMsgTimestamp?: number;
     archived?: boolean;
+    pinned?: boolean;
     messages: NormalizedHistoryMessage[];
   }>;
   pushnames: Array<{ jid: string; pushname: string }>;
   lidMappings: Array<{ pn: string; lid: string }>;
+  /** Group members who left / were removed (WhatsApp's ~60-day history). */
+  pastParticipants?: Array<{
+    groupJid: string;
+    members: Array<{ jid: string; leaveReason?: number; leaveTs?: number }>;
+  }>;
   /** INITIAL_STATUS_V3 chunks carry raw WebMessageInfo statuses, not conversations. */
   statusMessages?: NormalizedHistoryMessage[];
 }
@@ -154,7 +162,21 @@ export function normalizeMessageContent(message: any): NormalizedMessage | null 
   // WhatsApp flags forwarded content via contextInfo.isForwarded — surface it
   // so the CRM can show the same "Forwarded" label as the official client.
   const isForwarded = ctxs.some((c) => c?.isForwarded === true) || undefined;
-  const quoted = { quotedMessageId, quotedParticipant, isForwarded };
+  // @mentions ride in contextInfo.mentionedJid — the text only carries bare
+  // "@<digits>" tokens, so the full JIDs are needed to resolve names.
+  const mentionedJids = [
+    ...new Set(
+      ctxs.flatMap((c: any) =>
+        Array.isArray(c?.mentionedJid) ? c.mentionedJid.map(String) : [],
+      ),
+    ),
+  ];
+  const quoted = {
+    quotedMessageId,
+    quotedParticipant,
+    isForwarded,
+    mentionedJids: mentionedJids.length ? mentionedJids : undefined,
+  };
 
   if (message.reactionMessage) {
     return { type: 'reaction', body: message.reactionMessage.text || '', ...quoted };
@@ -163,6 +185,31 @@ export function normalizeMessageContent(message: any): NormalizedMessage | null 
   for (const [field, type] of MEDIA_FIELDS) {
     const m = message[field];
     if (!m) continue;
+    if (field === 'audioMessage') {
+      logger.info(
+        {
+          fieldKeys: Object.keys(m).filter((k: string) => m[k] != null),
+          mimetype: m.mimetype,
+          seconds: m.seconds,
+          ptt: m.ptt,
+          fileLength: m.fileLength != null ? Number(m.fileLength) : undefined,
+          mediaKeyTimestamp: m.mediaKeyTimestamp != null ? Number(m.mediaKeyTimestamp) : undefined,
+          mediaKeyDomain: m.mediaKeyDomain,
+          hasStreamingSidecar: !!m.streamingSidecar,
+          waveformLen: (m.waveform as Buffer | undefined)?.length,
+          hasUrl: !!m.url,
+          hasDirectPath: !!m.directPath,
+          contextInfoDump: m.contextInfo
+            ? JSON.stringify(m.contextInfo, (_k: string, v: unknown) =>
+                Buffer.isBuffer(v) || v instanceof Uint8Array
+                  ? `<b64:${Buffer.from(v).length}b>`
+                  : v,
+              ).slice(0, 500)
+            : null,
+        },
+        'audioMessage proto fields',
+      );
+    }
     const resolvedType = field === 'audioMessage' && m.ptt ? 'voice' : type;
     return {
       type: resolvedType,
@@ -219,6 +266,21 @@ export function normalizeMessageContent(message: any): NormalizedMessage | null 
 
   if (message.eventMessage) {
     return { type: 'event', body: message.eventMessage.name || 'حدث', ...quoted };
+  }
+
+  // A pin/unpin action sent into the chat (WhatsApp "Pin message") — not a
+  // bubble, Laravel flags the conversation instead.
+  if (message.pinInChatMessage) {
+    return {
+      type: 'pin',
+      body: '',
+      pin: {
+        action: Number(message.pinInChatMessage.type) === 2 ? 'unpin' : 'pin',
+        messageId: message.pinInChatMessage.key?.id,
+        remoteJid: message.pinInChatMessage.key?.remoteJid,
+      },
+      ...quoted,
+    };
   }
 
   const hasContent = CONTENT_FIELDS.some((f) => message[f] != null);
@@ -317,6 +379,20 @@ async function decodeHistorySync(buf: Buffer): Promise<any> {
           }
           break;
         }
+        case 12: { // repeated PastParticipants — who left each group, and why
+          const len = reader.uint32();
+          const pos = reader.pos;
+          try {
+            const ppT = root.lookupType('proto.PastParticipants');
+            const pp = ppT.decode(reader, len);
+            (out.pastParticipants = out.pastParticipants || []).push(
+              ppT.toObject(pp, toObj),
+            );
+          } catch {
+            reader.pos = pos + len;
+          }
+          break;
+        }
         case 15: { // repeated PhoneNumberToLIDMapping
           const len = reader.uint32();
           const pos = reader.pos;
@@ -400,9 +476,10 @@ export async function processHistorySyncNotification(
       jid: c.id,
       name: c.name || undefined,
       username: c.username || undefined,
-      unreadCount: c.unreadCount != null ? Number(c.unreadCount) : undefined,
+      unreadCount: c.unreadCount != null ? Number(c.unreadCount) : (c.markedAsUnread ? 1 : 0),
       lastMsgTimestamp: c.lastMsgTimestamp != null ? Number(c.lastMsgTimestamp) : undefined,
       archived: c.archived === true,
+      pinned: Boolean(c.pinned),
       messages: (c.messages || [])
         .map((m: any) => normalizeWebMessageInfo(m?.message))
         .filter((m: NormalizedHistoryMessage | null): m is NormalizedHistoryMessage => m !== null),
@@ -428,6 +505,19 @@ export async function processHistorySyncNotification(
     lidMappings: (history.lidMappings || [])
       .filter((m: any) => m?.lidJid && m?.pnJid)
       .map((m: any) => ({ lid: m.lidJid, pn: m.pnJid })),
+    pastParticipants: (history.pastParticipants || [])
+      .filter((g: any) => g?.groupJid)
+      .map((g: any) => ({
+        groupJid: g.groupJid,
+        members: (g.pastParticipants || [])
+          .filter((p: any) => p?.userJid)
+          .map((p: any) => ({
+            jid: p.userJid,
+            leaveReason: p.leaveReason, // 0 = left, 1 = removed
+            leaveTs: p.leaveTs,
+          })),
+      }))
+      .filter((g: any) => g.members.length),
     statusMessages: (history.statusV3Messages || [])
       .map((w: any) => normalizeWebMessageInfo(w))
       .filter((m: NormalizedHistoryMessage | null): m is NormalizedHistoryMessage => m !== null),

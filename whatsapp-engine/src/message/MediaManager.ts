@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import net from 'net';
 import fs from 'fs';
 import path from 'path';
+import { spawn } from 'child_process';
 import axios from 'axios';
 import { logger } from '../config/Logger.js';
 
@@ -208,6 +209,143 @@ export class MediaManager {
     } catch (err) {
       logger.warn({ err }, 'Failed to download and decrypt media');
       return null;
+    }
+  }
+
+  /**
+   * Persist a copy of OUTBOUND media bytes next to the inbound cache so the
+   * CRM can play what it sent. The engine already serves /storage/crm_media
+   * via the main backend's public dir. Returns the public path or null.
+   */
+  public static saveLocalCopy(rawBytes: Buffer, type: string, mimetype?: string): string | null {
+    try {
+      let ext = 'bin';
+      if (type === 'image') ext = mimetype?.includes('png') ? 'png' : 'jpg';
+      else if (type === 'video') ext = 'mp4';
+      else if (type === 'audio' || type === 'voice') {
+        ext = mimetype?.includes('ogg') || mimetype?.includes('opus') ? 'ogg'
+          : mimetype?.includes('mpeg') || mimetype?.includes('mp3') ? 'mp3'
+          : mimetype?.includes('mp4') || mimetype?.includes('aac') || mimetype?.includes('m4a') ? 'm4a'
+          : 'ogg';
+      } else if (mimetype) {
+        const tail = mimetype.split('/')[1]?.split(';')[0];
+        if (tail && /^[a-z0-9]{2,5}$/i.test(tail)) ext = tail.toLowerCase();
+      }
+      const filename = `media_${Date.now()}_${crypto.randomBytes(6).toString('hex')}.${ext}`;
+      const storageDir = '/var/www/Wavixa/backend/public/storage/crm_media';
+      if (!fs.existsSync(storageDir)) {
+        fs.mkdirSync(storageDir, { recursive: true });
+      }
+      fs.writeFileSync(path.join(storageDir, filename), rawBytes);
+      return `/storage/crm_media/${filename}`;
+    } catch (err) {
+      logger.warn({ err }, 'Failed to save outbound media copy');
+      return null;
+    }
+  }
+
+  /**
+   * Build the 64-byte amplitude waveform WhatsApp voice notes (ptt) carry.
+   * Decodes the audio to 8kHz mono PCM via ffmpeg and folds it into 64 RMS
+   * buckets scaled to 0-255. Without this field modern clients render the
+   * voice bubble but refuse to play it. Returns undefined on any failure —
+   * callers must never let waveform generation break a send.
+   */
+  public static async computeWaveform(audio: Buffer): Promise<Buffer | undefined> {
+    if (!audio || !audio.length) return undefined;
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v?: Buffer) => {
+        if (!done) { done = true; resolve(v); }
+      };
+      const ff = spawn('ffmpeg', [
+        '-v', 'error', '-i', 'pipe:0',
+        '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1',
+      ]);
+      const timer = setTimeout(() => { try { ff.kill('SIGKILL'); } catch { /* noop */ } finish(undefined); }, 15_000);
+      const chunks: Buffer[] = [];
+      ff.stdout.on('data', (c: Buffer) => chunks.push(c));
+      ff.on('error', () => { clearTimeout(timer); finish(undefined); });
+      ff.on('close', () => {
+        clearTimeout(timer);
+        try {
+          const pcm = Buffer.concat(chunks);
+          const sampleCount = Math.floor(pcm.length / 2);
+          if (sampleCount === 0) return finish(undefined);
+          const BUCKETS = 64;
+          const out = Buffer.alloc(BUCKETS);
+          const per = Math.max(1, Math.floor(sampleCount / BUCKETS));
+          let peak = 0;
+          const rms: number[] = new Array(BUCKETS).fill(0);
+          for (let b = 0; b < BUCKETS; b++) {
+            let sum = 0, n = 0;
+            const start = b * per;
+            const end = Math.min(start + per, sampleCount);
+            for (let i = start; i < end; i++) {
+              const s = pcm.readInt16LE(i * 2);
+              sum += s * s;
+              n++;
+            }
+            const v = n ? Math.sqrt(sum / n) : 0;
+            rms[b] = v;
+            if (v > peak) peak = v;
+          }
+          if (peak <= 0) return finish(undefined);
+          for (let b = 0; b < BUCKETS; b++) {
+            out[b] = Math.min(255, Math.round(((rms[b] ?? 0) / peak) * 100));
+          }
+          finish(out);
+        } catch {
+          finish(undefined);
+        }
+      });
+      ff.stdin.on('error', () => { clearTimeout(timer); finish(undefined); });
+      ff.stdin.write(audio);
+      ff.stdin.end();
+    });
+  }
+
+  /**
+   * Probe an audio/video buffer's duration in whole seconds via ffprobe
+   * (stdin). WhatsApp renders audio/ptt bubbles without a duration as
+   * unplayable, so sends must include `seconds`. Returns undefined when
+   * ffprobe is unavailable or cannot parse the buffer.
+   */
+  public static async probeDurationSeconds(media: Buffer): Promise<number | undefined> {
+    if (!media || !media.length) return undefined;
+    // ffprobe can't parse duration from piped input for formats like ogg
+    // that need seeking — write to a temp file instead.
+    const tmp = path.join(
+      fs.existsSync('/tmp') ? '/tmp' : '.',
+      `wavixa_probe_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+    );
+    try {
+      fs.writeFileSync(tmp, media);
+    } catch {
+      return undefined;
+    }
+    try {
+      return await new Promise((resolve) => {
+        let done = false;
+        const finish = (v?: number) => {
+          if (!done) { done = true; resolve(v); }
+        };
+        const fp = spawn('ffprobe', [
+          '-v', 'error', '-show_entries', 'format=duration',
+          '-of', 'csv=p=0', tmp,
+        ]);
+        const timer = setTimeout(() => { try { fp.kill('SIGKILL'); } catch { /* noop */ } finish(undefined); }, 15_000);
+        let out = '';
+        fp.stdout.on('data', (c: Buffer) => { out += c.toString('utf8'); });
+        fp.on('error', () => { clearTimeout(timer); finish(undefined); });
+        fp.on('close', () => {
+          clearTimeout(timer);
+          const secs = Math.round(parseFloat(out.trim()));
+          finish(Number.isFinite(secs) && secs > 0 ? secs : undefined);
+        });
+      });
+    } finally {
+      try { fs.unlinkSync(tmp); } catch { /* noop */ }
     }
   }
 }

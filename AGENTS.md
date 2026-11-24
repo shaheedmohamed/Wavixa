@@ -147,6 +147,16 @@ to `wavixa-engine.service` — the custom protocol engine in `whatsapp-engine/` 
 `npm run build` -> `dist/`). The older `whatsapp-service` (whatsapp-web.js, port 3002)
 still runs but is not on the send path.
 
+**CRITICAL — two engine copies exist.** `wavixa-engine.service` runs
+`/var/www/Wavixa/whatsapp-engine/dist/index.js` (WorkingDirectory in the unit
+file), NOT `/var/www/WavixaCRM/whatsapp-engine`. The WavixaCRM copy is a repo
+clone; the Wavixa copy is what production actually executes — and it may carry
+hotfixes the repo lacks (e.g. the 2026-10 prekey-eviction patch). Always apply
+engine changes to BOTH trees, `npm run build` in `/var/www/Wavixa/whatsapp-engine`,
+and `systemctl restart wavixa-engine`. Building only the WavixaCRM copy fixes
+nothing in production (this happened once — a fix sat unbuilt in the repo while
+the live dist stayed old).
+
 The engine delivers webhooks over **loopback HTTP**: `LARAVEL_API_URL=http://127.0.0.1:8089/api`
 (local vhost `/etc/nginx/sites-available/wavixa-internal` -> `/var/www/Wavixa/backend/public`)
 plus `LARAVEL_API_URLS_EXTRA=http://127.0.0.1:8088/api` (CRM backend) and
@@ -265,6 +275,13 @@ migrated accounts — a stanza mixing @lid `to` with a PN `key.remoteJid` gets
 ack error 400. `CrmController::deleteMessage` must check the engine response
 body (`success`) — Laravel's HTTP client does not throw on non-2xx, and the
 previous code stamped `revoked_at` even when the engine rejected the call.
+The revoke stanza MUST carry `edit="7"` on the `<message>` attrs
+(sender revoke; `8` = group-admin revoke — WhatsApp Web's editAttribute
+values): `sendWAMessage` adds it when the payload is
+`protocolMessage{type:REVOKE}`. Without it the server still acks the stanza
+("revoke sent" logs, 200 API) but recipient clients silently drop the
+protocol message and nothing is deleted — this was the 2026-11 "delete
+doesn't reach the customer" bug.
 
 ### Retry receipts ("Waiting for this message")
 
@@ -410,3 +427,59 @@ it was being saved as the customer's `contact_name` (dozens of chats
 renamed to the owner's name). Engine `routes.ts` now sends
 `senderName` only when `!fromMe`, and both Laravel `messageReceived`
 handlers null it defensively.
+
+### Read-state sync CRM↔WhatsApp (2026-11-10)
+
+Two directions, two different mechanisms — do not confuse them:
+
+- **CRM → phone**: a `<receipt type='read'>` only blues the SENDER's ticks.
+  The owner's unread badge clears via a `markChatAsRead` **app-state
+  (syncd) mutation** on `regular_low` — `WaClient.markChatAsRead` →
+  `sendAppStatePatch`. `AppStateProcessor.encodePatch` implements the full
+  write MAC chain (indexMac/valueMac/snapshotMac/patchMac, LtHash over
+  mutation VALUE macs, HKDF "WhatsApp Mutation Keys" → 5×32B segments).
+  Integrity state (version + 128B LtHash) persists in creds
+  `appStateCollections`; the indexMac→valueMac map is memory-only and
+  rebuilds on replay. `/internal/messages/read` fires it fire-and-forget
+  after the receipt.
+- **Phone → CRM**: phone marks read → server pushes
+  `<notification><collection><patch>` → decoded in `processAppStateResult`
+  → `chat.read` → `whatsapp/chat-read` webhook → `unread_count=0` +
+  `conversation.update` broadcast. **`Session.getClient()?.on` is a
+  footgun**: the WaClient is null until `connect()`, so listeners must be
+  registered through `Session.onChatRead/onChatArchived/onChatPinned`
+  (bridged inside `createClient`), never via `getClient()` in routes —
+  the old wiring silently never attached for 14+ days.
+- **Never emit chat.* events from a v0 replay.** markChatAsRead/pin/archive
+  mutations persist forever; a full-history replay re-fires them as
+  ancient state and zeroes badges on chats that went unread since.
+  `syncAppStateCollections` suppresses events for collections whose
+  request started at version 0 (`initialSync`), paginates on
+  `has_more_patches`, and requests at the persisted version.
+- `return_snapshot` stays `'false'` — `<snapshot>` content is a CDN
+  `ExternalBlobReference`, not a SyncdSnapshot; the decoder can't unpack
+  it, and patch replay builds the same state.
+- On `409 conflict` from a patch send → `fullResyncCollection` replays
+  that collection from v0, then the patch is re-encoded and retried once.
+- `<query>` stanza errors now carry `err.node` (raw error stanza) for
+  debugging.
+
+### Prekey storage — two namespaces, do NOT merge (2026-11-17)
+
+`creds.preKeys` are **server-published** one-time prekeys (`uploadPreKeys`
+batches, ~812 outstanding). A peer can hold a fetched bundle for *weeks* —
+deleting a published key makes every pkmsg from that peer permanently
+undecryptable (`Invalid PreKey ID`). The 2026-10 single-map eviction patch
+(ca. 500-key cap) did exactly this: ~2.5k `Invalid PreKey ID` drops/day.
+
+- `creds.retryPreKeys` holds keys minted inside retry-receipt `<keys>` —
+  valid only for the peer's immediate resend; bounded to newest 512.
+- `SignalStore.loadPreKey` checks both maps; `removePreKey` clears both.
+- Bulk keys get a safety cap (8192) inside `uploadPreKeys` only — never
+  pruned on the receive path.
+- Poisoned server pool heals via `POST /internal/prekeys/refresh
+  {sessionId, count}` → `WaClient.refreshServerPreKeys()` — replaces the
+  WHOLE server list with fresh live keys (peers refetch dead bundles on
+  retry-receipt anyway).
+- `SessionBuilder` errors now embed `want=/stored=` key ranges — check
+  `journalctl -u wavixa-engine | grep "want="` before touching this path.

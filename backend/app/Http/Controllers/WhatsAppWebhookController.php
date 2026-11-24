@@ -170,6 +170,7 @@ class WhatsAppWebhookController extends Controller
                 'message' => 'nullable|string',
                 'messageType' => 'nullable|string',
                 'messageId' => 'required|string',
+                'mediaUrl' => 'nullable|string',
                 'timestamp' => 'nullable',
             ]);
 
@@ -266,6 +267,9 @@ class WhatsAppWebhookController extends Controller
                     if (empty($message->message_type)) {
                         $updateData['message_type'] = $data['messageType'] ?? 'text';
                     }
+                    if (empty($message->media_url) && !empty($data['mediaUrl'])) {
+                        $updateData['media_url'] = $data['mediaUrl'];
+                    }
                     if (empty($message->conversation_id) && $conversation) {
                         $updateData['conversation_id'] = $conversation->id;
                     }
@@ -281,6 +285,7 @@ class WhatsAppWebhookController extends Controller
                         'message' => $data['message'] ?? '',
                         'message_type' => $data['messageType'] ?? 'text',
                         'message_id' => $data['messageId'],
+                        'media_url' => $data['mediaUrl'] ?? null,
                         'status' => WhatsAppMessage::STATUS_SENT,
                         'direction' => 'outgoing',
                         'sent_at' => now(),

@@ -62,6 +62,9 @@ Route::middleware(['api', HandleCors::class])->group(function () {
         Route::post('/whatsapp/contacts-sync', [\App\Http\Controllers\WhatsAppWebhookController::class, 'contactsSync']);
         Route::post('/whatsapp/message-media', [\App\Http\Controllers\WhatsAppWebhookController::class, 'messageMedia']);
         Route::post('/whatsapp/chatstate', [\App\Http\Controllers\WhatsAppWebhookController::class, 'chatstate']);
+        Route::post('/whatsapp/chat-read', fn () => response()->json(['success' => true]));
+        Route::post('/whatsapp/chat-pinned', fn () => response()->json(['success' => true]));
+        Route::post('/whatsapp/chat-archived', fn () => response()->json(['success' => true]));
 
         // Telegram service webhooks
         Route::post('/telegram/connected', [TelegramWebhookController::class, 'connected']);

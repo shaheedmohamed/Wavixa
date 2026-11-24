@@ -1,11 +1,19 @@
 import type { WaCreds } from '../waweb/WaCreds.js';
 
 export interface SenderKeyStateData {
+  /** Own-key scheme marker — 2 = Ed25519 signing (XEdDSA-equivalent). */
+  v?: number;
   keyId: number;
   iteration: number;
   chainKey: string; // base64
   signingKey: string; // base64 ed25519 public (32B)
   messageKeys: Record<string, string>; // iteration -> base64 seed
+  /** Own keys only — Curve25519 private that signs our outgoing skmsg. */
+  signingPrivateKey?: string; // base64 (32B)
+  /** Own keys only — devices that already received our SKDM. */
+  distributedTo?: Record<string, boolean>;
+  /** Own keys only — frozen iteration-0 SKDM blob for redistribution. */
+  skdm?: string; // base64
 }
 
 /**

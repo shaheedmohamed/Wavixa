@@ -33,12 +33,13 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 const qrcode = require('qrcode');
 
-const PHONE = '201024520482';
+const PHONE = process.env.BRIDGE_PHONE || '201024520482';
 const AUTH_ROOT = path.join(__dirname, '.auth');
-const PORT = 3999;
+const PORT = parseInt(process.env.BRIDGE_PORT || '3999', 10);
+const CLIENT_ID = process.env.BRIDGE_CLIENT_ID || 'cb-482';
 const CHROME =
   '/var/www/Wavixa/whatsapp-service/.puppeteer_cache/chrome/linux-146.0.7680.31/chrome-linux64/chrome';
-const OUT_DIR = path.join(__dirname, 'out');
+const OUT_DIR = process.env.BRIDGE_OUT_DIR || path.join(__dirname, 'out');
 const WS_SECRET = (() => {
   try { return fs.readFileSync(path.join(__dirname, '.wssecret'), 'utf8').trim(); }
   catch (e) { return null; }
@@ -1094,9 +1095,9 @@ async function doMute(m) {
 // ---------------------------------------------------------------------------
 // Browser boot
 // ---------------------------------------------------------------------------
-async function bootClient() {
+async function bootClient(attempt = 0) {
   client = new Client({
-    authStrategy: new LocalAuth({ clientId: 'cb-482', dataPath: AUTH_ROOT }),
+    authStrategy: new LocalAuth({ clientId: CLIENT_ID, dataPath: AUTH_ROOT }),
     authTimeoutMs: 300000,
     qrTimeoutMs: 300000,
     restartOnAuthFail: false,
@@ -1154,10 +1155,19 @@ async function bootClient() {
     } catch (e) { log('ready-handler err', e.message); }
   });
 
-  // retry loop — wweb.js races with page reloads after auth
-  for (let i = 0; i < 6; i++) {
-    try { await client.initialize(); log('client.initialize resolved'); return; }
-    catch (e) { log('initialize retry', i, e.message.slice(0, 120)); await sleep(5000); }
+  // A failed initialize() leaves its Chromium alive holding the profile dir
+  // (every later attempt then fails with "The browser is already running"),
+  // so each retry must destroy the old client and boot a fresh one.
+  try {
+    await client.initialize();
+    log('client.initialize resolved');
+  } catch (e) {
+    log('initialize attempt', attempt + 1, 'failed:', e.message.slice(0, 120));
+    if (attempt + 1 >= 10) { log('initialize gave up after 10 attempts'); return; }
+    const old = client; client = null;
+    try { await withTimeout(old.destroy(), 15000); } catch {}
+    await sleep(5000);
+    return bootClient(attempt + 1);
   }
 }
 
@@ -1200,29 +1210,67 @@ setInterval(async () => {
 // 'disconnected' for that, so sessionReady stays true while dials silently
 // go nowhere. Detect the banner, nudge "Retry now", and hard-reload the page
 // when it stays stuck — otherwise every call dead-ends in 'dialing'.
+// Recovery ladder: Retry-now click → page reload (>60s) → FULL client restart
+// (>5min banner, or when the page stops answering JS at all — a wedged WA main
+// thread makes evaluate() hang forever, which silently killed this watchdog on
+// 2026-11-23 and left the bridge 'offline' for 5h).
+let evalDeadSince = 0;
+let lastReload = 0;
+let lastFullRestart = 0;
+
+const withTimeout = (p, ms) => Promise.race([p, sleep(ms).then(() => Promise.reject(new Error('timeout')))]);
+
+async function restartBridge(reason) {
+  lastFullRestart = Date.now();
+  sessionReady = false; waOnline = false;
+  offlineSince = 0; evalDeadSince = 0; lastRetryClick = 0; lastReload = 0;
+  log('FULL CLIENT RESTART:', reason);
+  const old = client; client = null;
+  try { await withTimeout(old.destroy(), 15000); } catch (e) {}
+  await sleep(2000);
+  bootClient().catch((e) => log('reboot failed', e.message));
+}
+
 setInterval(async () => {
   if (!client || !client.pupPage || !sessionReady) return;
+  const p = client.pupPage;
+  let offline = null;
   try {
-    const p = client.pupPage;
-    const offline = await p.evaluate(`(() => {
+    offline = await withTimeout(p.evaluate(`(() => {
       const t = (document.body && document.body.innerText) || '';
       return /connecting to whatsapp|retrying\\.\\.\\.|retry now|phone not connected|computer not connected/i.test(t);
-    })()`).catch(() => null);
-    if (offline === null) return;
+    })()`), 8000);
+    evalDeadSince = 0;
+  } catch (e) {
+    // Page won't answer JS — wedged main thread, reload rarely fixes it.
+    if (!evalDeadSince) { evalDeadSince = Date.now(); log('watchdog eval unresponsive — page wedged?'); }
+    const dead = Date.now() - evalDeadSince;
+    if (dead > 90000 && Date.now() - lastFullRestart > 180000) {
+      await restartBridge(`page unresponsive ${Math.round(dead / 1000)}s`);
+    } else if (dead > 30000 && Date.now() - lastReload > 30000) {
+      lastReload = Date.now();
+      log('page unresponsive >30s — force reload');
+      await withTimeout(p.reload({ waitUntil: 'domcontentloaded' }), 15000).catch(() => {});
+    }
+    return;
+  }
+  try {
     if (offline) {
       if (waOnline) { waOnline = false; offlineSince = Date.now(); log('WA Web offline — reconnect banner detected'); }
       const stuckMs = Date.now() - offlineSince;
-      if (stuckMs > 60000) {
+      if (stuckMs > 300000 && Date.now() - lastFullRestart > 180000) {
+        await restartBridge('offline banner stuck >5min');
+      } else if (stuckMs > 60000 && Date.now() - lastReload > 60000) {
+        lastReload = Date.now();
         log('WA Web offline >60s — reloading page');
-        offlineSince = Date.now();
-        await p.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+        await withTimeout(p.reload({ waitUntil: 'domcontentloaded' }), 15000).catch(() => {});
       } else if (Date.now() - lastRetryClick > 12000) {
         lastRetryClick = Date.now();
-        const clicked = await p.evaluate(`(() => {
+        const clicked = await withTimeout(p.evaluate(`(() => {
           const el = [...document.querySelectorAll('button, a, span, div')].find((e) => /^retry now$/i.test((e.innerText || '').trim()));
           if (el) { el.click(); return true; }
           return false;
-        })()`).catch(() => false);
+        })()`), 8000).catch(() => false);
         if (clicked) log('clicked Retry now');
       }
     } else if (!waOnline) {

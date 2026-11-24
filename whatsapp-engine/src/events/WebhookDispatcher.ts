@@ -128,10 +128,54 @@ export class WebhookDispatcher {
         isGroup: p.data.isGroup || false,
         replyToId: p.data.replyToId || null,
         isForwarded: p.data.isForwarded || false,
+        mentionedJids: p.data.mentionedJids || [],
+        pin: p.data.pin || null,
         msgTimestamp: p.data.msgTimestamp || null,
         timestamp: p.timestamp,
       });
       await this.dispatchUnifiedWebhook(p);
+    });
+
+    bus.on('chat.pinned', async (p) => {
+      await this.notifyLaravel('whatsapp/chat-pinned', {
+        userId: p.session_id,
+        jid: p.from,
+        pinned: p.data?.pinned !== false,
+        timestamp: p.timestamp,
+      });
+    });
+
+    bus.on('chat.archived', async (p) => {
+      await this.notifyLaravel('whatsapp/chat-archived', {
+        userId: p.session_id,
+        jid: p.from,
+        archived: p.data?.archived !== false,
+        timestamp: p.timestamp,
+      });
+    });
+
+    bus.on('chat.read', async (p) => {
+      await this.notifyLaravel('whatsapp/chat-read', {
+        userId: p.session_id,
+        jid: p.from,
+        lidJid: p.data?.lidJid || null,
+        read: p.data?.read !== false,
+        lastMessageTimestamp: p.data?.lastMessageTimestamp || null,
+        timestamp: p.timestamp,
+      });
+    });
+
+    bus.on('chats.read_reconcile', async (p) => {
+      const reads = Array.isArray(p.data?.reads) ? p.data.reads : [];
+      const CHUNK = 200;
+      for (let i = 0; i < reads.length; i += CHUNK) {
+        await this.notifyLaravel('whatsapp/chat-read', {
+          userId: p.session_id,
+          reconcile: true,
+          reads: reads.slice(i, i + CHUNK),
+          timestamp: p.timestamp,
+        });
+      }
     });
 
     bus.on('history.sync', async (p) => {
@@ -159,6 +203,9 @@ export class WebhookDispatcher {
           requestId: p.data.requestId ?? null,
           pushnames: p.data.pushnames || [],
           lidMappings: p.data.lidMappings || [],
+          // Group "past participants" ship once with the first chunk — the
+          // list is per-sync, not per-conversation.
+          pastParticipants: i === 0 ? (p.data.pastParticipants || []) : [],
           statusMessages: p.data.statusMessages || [],
           conversations: conversations.slice(i, i + CHUNK),
           chunkIndex: Math.floor(i / CHUNK),
@@ -221,6 +268,7 @@ export class WebhookDispatcher {
         to: p.to,
         message: p.data.message,
         messageType: p.data.messageType || 'text',
+        ...(p.data.mediaUrl ? { mediaUrl: p.data.mediaUrl } : {}),
         status: 'sent',
         timestamp: p.timestamp,
       });

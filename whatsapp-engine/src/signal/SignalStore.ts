@@ -56,12 +56,37 @@ export class SignalStore {
   // -- prekeys ------------------------------------------------------------
 
   public loadPreKey(preKeyId: number): IKeyPair | undefined {
-    return this.creds.preKeys?.[preKeyId.toString()];
+    const id = preKeyId.toString();
+    return this.creds.preKeys?.[id] ?? this.creds.retryPreKeys?.[id];
+  }
+
+  public preKeyIdRange(): string {
+    const range = (ids: string[]): string => {
+      if (!ids.length) return 'none';
+      let min = Infinity;
+      let max = -Infinity;
+      for (const id of ids) {
+        const n = Number(id);
+        if (n < min) min = n;
+        if (n > max) max = n;
+      }
+      return `${min}..${max} (${ids.length})`;
+    };
+    return `bulk=${range(Object.keys(this.creds.preKeys || {}))} retry=${range(Object.keys(this.creds.retryPreKeys || {}))}`;
+  }
+
+  public signedPreKeyId(): number | undefined {
+    return this.creds.signedPreKey?.keyId;
   }
 
   public removePreKey(preKeyId: number): void {
-    if (this.creds.preKeys) {
-      delete this.creds.preKeys[preKeyId.toString()];
+    const id = preKeyId.toString();
+    if (this.creds.preKeys && id in this.creds.preKeys) {
+      delete this.creds.preKeys[id];
+      this.onPersist();
+    }
+    if (this.creds.retryPreKeys && id in this.creds.retryPreKeys) {
+      delete this.creds.retryPreKeys[id];
       this.onPersist();
     }
   }

@@ -33,12 +33,23 @@ export interface WaCreds {
   routingInfo?: Buffer;
   pairingCode?: string;
   registered?: boolean;
-  /** Uploaded one-time pre-keys, keyed by preKeyId — needed to accept inbound sessions */
+  /** Uploaded one-time pre-keys, keyed by preKeyId — needed to accept inbound sessions.
+   *  NEVER evict: a peer can hold a fetched server bundle for weeks. */
   preKeys?: Record<string, IKeyPair>;
+  /** Pre-keys issued inside retry receipts — valid only for the peer's
+   *  immediate resend, so bounded to the newest few hundred. */
+  retryPreKeys?: Record<string, IKeyPair>;
   lastAccountSyncTimestamp?: number;
   myAppStateKeyId?: string;
   /** App-state sync keys pushed by the primary — keyId (base64) → keyData (base64). */
   appStateKeys?: Record<string, string>;
+  /**
+   * Per-collection syncd integrity state — version + LtHash (base64).
+   * Persisted so resyncs fetch deltas instead of replaying history, and so
+   * outgoing patches chain on the server's state. The indexMac→valueMac
+   * map stays in memory; misses only cost a 409+full-resync retry.
+   */
+  appStateCollections?: Record<string, { version: number; hash: string }>;
   /** Signal double-ratchet session records, keyed by remote jid */
   signalSessions?: Record<string, unknown>;
   /** Sender-key (group/broadcast) ratchet state, keyed "groupJid::authorJid" */

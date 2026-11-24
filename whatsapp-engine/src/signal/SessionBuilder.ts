@@ -90,12 +90,16 @@ export class SessionBuilder {
 
     const preKeyPair = message.preKeyId ? this.store.loadPreKey(message.preKeyId) : undefined;
     if (message.preKeyId && !preKeyPair) {
-      throw new Error('Invalid PreKey ID');
+      throw new Error(
+        `Invalid PreKey ID (want=${message.preKeyId} signed=${message.signedPreKeyId} reg=${message.registrationId} stored=[${this.store.preKeyIdRange()}])`,
+      );
     }
 
     const signedPreKeyPair = this.store.loadSignedPreKey(message.signedPreKeyId);
     if (!signedPreKeyPair) {
-      throw new Error('Missing SignedPreKey');
+      throw new Error(
+        `Missing SignedPreKey (want=${message.signedPreKeyId} have=${this.store.signedPreKeyId()} reg=${message.registrationId})`,
+      );
     }
 
     const ourSignedKey: SignalKeyPair = {

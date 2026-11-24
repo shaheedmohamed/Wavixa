@@ -111,6 +111,18 @@ export const WaProto = {
     return T.toObject(T.decode(buf), { bytes: Buffer, longs: Number, defaults: false });
   },
 
+  async encodeSenderKeyMessage(msg: Record<string, unknown>): Promise<Buffer> {
+    const root = await loadWaProto();
+    const T = root.lookupType('proto.SenderKeyMessage');
+    return Buffer.from(T.encode(T.fromObject(msg as any)).finish());
+  },
+
+  async encodeSenderKeyDistributionMessage(msg: Record<string, unknown>): Promise<Buffer> {
+    const root = await loadWaProto();
+    const T = root.lookupType('proto.SenderKeyDistributionMessage');
+    return Buffer.from(T.encode(T.fromObject(msg as any)).finish());
+  },
+
   async decodeSenderKeyMessage(buf: Buffer): Promise<any> {
     const root = await loadWaProto();
     const T = root.lookupType('proto.SenderKeyMessage');
