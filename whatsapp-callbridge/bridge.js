@@ -25,6 +25,13 @@
  * forwarded to the CRM webhook (Laravel) for Reverb broadcast.
  */
 const { Client, LocalAuth } = require('whatsapp-web.js');
+// Injected util bundle — defines window.WWebJS (getChat/openChatWindow need
+// it). wweb.js only evaluates it inside the auth HasSynced callback, which
+// does NOT re-fire after an in-place page reload, so a CSP/recovery reload
+// leaves the page working but WWebJS gone — every openChatWindow then dies
+// with "Cannot read properties of undefined (reading 'getChat')". The
+// watchdog below re-injects it.
+const { LoadUtils } = require('whatsapp-web.js/src/util/Injected/Utils');
 const express = require('express');
 const http = require('http');
 const crypto = require('crypto');
@@ -73,6 +80,10 @@ let callIsVideo = false;       // true while the current call carries video
 let callConnectedAt = 0;       // ms ts when the call went active
 let callEventsMutedUntil = 0;  // swallow stale WALOG call lines right after a call ends
 let dialStartedAt = 0;
+let incomingSince = 0;         // when the current incoming call started ringing
+let incomingPeerNotified = false; // CRM got an 'incoming' webhook carrying a peer
+let offerAbsentSince = 0;      // first probe scan that found no pending offer
+let lastUtilsReinject = 0;     // throttle WWebJS re-injection attempts
 let waOnline = true;           // last observed WA Web socket state (banner check)
 let offlineSince = 0;          // ts when the offline banner was first seen
 let lastRetryClick = 0;        // last "Retry now" nudge ts
@@ -757,6 +768,7 @@ function setCallState(s, extra = {}) {
   const prev = callState;
   callState = s;
   if (s === 'active') callConnectedAt = Date.now();
+  if (s === 'incoming') { incomingSince = Date.now(); incomingPeerNotified = !!callPeer; offerAbsentSince = 0; }
   log('callState →', s, JSON.stringify(extra));
   broadcast({ type: 'event', event: 'state', callState: s, ...extra });
   const payload = { event: 'state', callState: s, peer: callPeer ?? extra.peer, prevState: prev, video: callIsVideo, ...extra };
@@ -798,21 +810,35 @@ async function webhook(payload) {
 function handleCallProbe(cs) {
   if (!cs) return;
   const offer = (cs.offers || []).find((o) => o && !o.outgoing && !o.group && !o.silenced);
-  if (offer && callState === 'idle' && Date.now() > callEventsMutedUntil) {
-    // ignore offers replayed after a reconnect — only fresh ones ring
-    if (!offer.t || Date.now() - offer.t < 90000) {
-      callDirection = 'in';
-      if (offer.jid) {
-        const m = String(offer.jid).match(/(\d+)[@:]/);
-        if (m) callPeer = m[1];
-      }
-      callIsVideo = !!offer.video;
+  // ignore offers replayed after a reconnect — only fresh ones ring
+  const freshOffer = offer && (!offer.t || Date.now() - offer.t < 90000);
+  if (freshOffer && (callState === 'idle' || callState === 'incoming')) {
+    offerAbsentSince = 0;
+    callDirection = 'in';
+    if (offer.jid) {
+      const m = String(offer.jid).match(/(\d+)[@:]/);
+      if (m) callPeer = m[1];
+    }
+    callIsVideo = !!offer.video;
+    if (callState === 'idle' && Date.now() > callEventsMutedUntil) {
       setCallState('incoming', { peer: callPeer, video: callIsVideo });
+    } else if (callState === 'incoming' && callPeer && !incomingPeerNotified) {
+      // WALOG saw the call first but couldn't name the caller — the probe
+      // just resolved it, so re-notify the CRM with a peered 'incoming'.
+      incomingPeerNotified = true;
+      broadcast({ type: 'event', event: 'state', callState: 'incoming', peer: callPeer, video: callIsVideo });
+      webhook({ event: 'state', callState: 'incoming', peer: callPeer, prevState: 'idle', video: callIsVideo });
     }
     return;
   }
-  // offer gone while ringing → caller hung up / answered elsewhere → missed
+  // offer gone while ringing → caller hung up / answered elsewhere → missed.
+  // WA churns the offer model during call setup (it can vanish for a scan
+  // or two while the call still rings), so require ~9s of absence before
+  // declaring the call dead.
   if (!offer && callState === 'incoming') {
+    if (!offerAbsentSince) { offerAbsentSince = Date.now(); return; }
+    if (Date.now() - offerAbsentSince < 9000) return;
+    offerAbsentSince = 0;
     const peer = callPeer; callPeer = null; callMuted = false;
     setCallState('idle', { reason: 'terminated', peer });
     return;
@@ -830,13 +856,14 @@ function onConsoleLine(text) {
   // dead call or clear the next call's peer.
   if (Date.now() < callEventsMutedUntil) return;
   if (/call_state_changed:ReceivedCall|Handle MESSAGE Offer|incoming call|call offer/i.test(t) && callState === 'idle') {
-    callState = 'incoming';
     callDirection = 'in';
     // best-effort peer extraction: "Offer from:NNNN:dd@lid" or DOM later
     const m = t.match(/from:([0-9]+)/);
     callPeer = m ? m[1] : callPeer;
-    broadcast({ type: 'event', event: 'incoming', peer: callPeer });
-    webhook({ event: 'incoming', peer: callPeer });
+    // MUST go through setCallState — the CRM only treats event:'state' +
+    // callState:'incoming' as a ring; a bare {event:'incoming'} never
+    // triggers the FCM incoming-call push.
+    setCallState('incoming', { peer: callPeer });
     return;
   }
   if (/call_state_changed:CallActive|state CallActive/i.test(t)) return setCallState('active');
@@ -847,6 +874,10 @@ function onConsoleLine(text) {
     // replayed stanza from the previous call — a real call can't end before
     // it's placed
     if (callState === 'dialing' && Date.now() - dialStartedAt < 15000) return;
+    // WA logs a transient terminate/None right after ReceivedCall while the
+    // offer model settles — a real caller can't hang up that fast. Ignore it;
+    // the probe's offer-absence debounce catches real cancels.
+    if (callState === 'incoming' && Date.now() - incomingSince < 15000) return;
     if (callState !== 'idle') { const peer = callPeer; callPeer = null; callMuted = false; setCallState('idle', { reason: 'terminated', peer }); }
   }
 }
@@ -1419,6 +1450,20 @@ setInterval(async () => {
     } else if (!waOnline) {
       waOnline = true; offlineSince = 0;
       log('WA Web back online');
+    }
+    // window.WWebJS (LoadUtils) is only injected during the auth HasSynced
+    // callback — a recovery/CSP reload after READY never re-fires it, so the
+    // page works but openChatWindow/getChat die on undefined until restart.
+    if (!offline && Date.now() - lastUtilsReinject > 30000) {
+      const hasUtils = await withTimeout(
+        p.evaluate('typeof window.WWebJS !== "undefined"'), 8000
+      ).catch(() => null);
+      if (hasUtils === false) {
+        lastUtilsReinject = Date.now();
+        await p.evaluate(LoadUtils)
+          .then(() => log('re-injected LoadUtils — window.WWebJS restored'))
+          .catch((e) => log('LoadUtils re-inject failed:', String(e && e.message || e).slice(0, 120)));
+      }
     }
   } catch (e) {}
 }, 5000);

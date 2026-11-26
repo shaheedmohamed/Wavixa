@@ -358,11 +358,57 @@ class WhatsAppWebhookController extends Controller
 
             $messages = WhatsAppMessage::whereIn('message_id', $ids)->get();
 
+            $extraByUser = []; // cumulative bumps, keyed by owner for broadcast
             foreach ($messages as $message) {
                 if (($rank[$message->status] ?? 0) >= ($rank[$status] ?? 0)) {
                     continue; // never downgrade (read → delivered on out-of-order receipts)
                 }
                 $message->update(['status' => $status, $tsColumn => now()]);
+                // sent → read jumps over delivered — backfill the stamp.
+                if ($status === WhatsAppMessage::STATUS_READ && !$message->delivered_at) {
+                    $message->update(['delivered_at' => now()]);
+                }
+
+                // WhatsApp receipts are cumulative: a delivered/read receipt
+                // for message N covers every earlier outgoing message in the
+                // same 1:1 chat. Groups/broadcasts stay per-id — one
+                // participant's ack says nothing about the rest.
+                if ($message->conversation_id) {
+                    $conv = $message->conversation;
+                    $jid = $conv?->contact_jid ?? '';
+                    $isGroupChat = str_ends_with($jid, '@g.us')
+                        || str_ends_with($jid, '@broadcast')
+                        || str_ends_with($jid, '@newsletter');
+                    if ($conv && !$isGroupChat) {
+                        $lowerStatuses = $status === WhatsAppMessage::STATUS_READ
+                            ? [WhatsAppMessage::STATUS_SENT, WhatsAppMessage::STATUS_DELIVERED]
+                            : [WhatsAppMessage::STATUS_SENT];
+                        $extras = WhatsAppMessage::where('conversation_id', $conv->id)
+                            ->where('direction', 'outgoing')
+                            ->where('id', '!=', $message->id)
+                            ->whereIn('status', $lowerStatuses)
+                            ->where(function ($q) use ($message) {
+                                $q->where('timestamp', '<=', $message->timestamp ?? $message->created_at)
+                                    ->orWhereNull('timestamp');
+                            })
+                            ->get();
+                        if ($extras->isNotEmpty()) {
+                            $extraIds = $extras->pluck('id');
+                            if ($status === WhatsAppMessage::STATUS_READ) {
+                                WhatsAppMessage::whereIn('id', $extraIds)
+                                    ->whereNull('delivered_at')
+                                    ->update(['delivered_at' => now()]);
+                            }
+                            WhatsAppMessage::whereIn('id', $extraIds)
+                                ->update(['status' => $status, $tsColumn => now()]);
+                            $extras->each(function ($m) use ($status) {
+                                $m->status = $status;
+                            });
+                            $extraByUser[$message->user_id] =
+                                ($extraByUser[$message->user_id] ?? collect())->merge($extras);
+                        }
+                    }
+                }
 
                 WebhookDispatcher::dispatch($message->user_id, $eventName, [
                     'message_id' => $message->id,
@@ -375,12 +421,16 @@ class WhatsAppWebhookController extends Controller
                 ]);
             }
 
-            if ($messages->isNotEmpty()) {
-                $messages->groupBy('user_id')->each(function ($msgs, $userId) use ($status) {
+            if ($messages->isNotEmpty() || $extraByUser) {
+                $byUser = $messages->groupBy('user_id');
+                foreach ($extraByUser as $uid => $extras) {
+                    $byUser[$uid] = ($byUser[$uid] ?? collect())->merge($extras);
+                }
+                $byUser->each(function ($msgs, $userId) use ($status) {
                     try {
                         event(new \App\Events\CrmRealtimeEvent($userId, 'message.status', [
                             'status' => $status,
-                            'items' => $msgs->map(fn ($m) => [
+                            'items' => $msgs->unique('id')->map(fn ($m) => [
                                 'message_id' => $m->id,
                                 'external_message_id' => $m->message_id,
                                 'conversation_id' => $m->conversation_id,
@@ -792,6 +842,15 @@ class WhatsAppWebhookController extends Controller
                     $conversation->update($convUpdates);
                 }
 
+                // A replayed chunk carries the status the phone saw when it
+                // was generated — often older than live receipts already
+                // applied. Snapshot stored statuses once per conversation so
+                // the import never rewinds read → delivered → sent.
+                $statusRank = ['sent' => 1, 'delivered' => 2, 'read' => 3];
+                $storedStatuses = WhatsAppMessage::where('user_id', $session->user_id)
+                    ->whereIn('message_id', collect($msgs)->pluck('id')->filter()->all())
+                    ->pluck('status', 'message_id');
+
                 foreach ($msgs as $m) {
                     $fromMe = !empty($m['fromMe']);
                     $type = $m['type'] ?? 'text';
@@ -817,35 +876,48 @@ class WhatsAppWebhookController extends Controller
                         ]);
                     }
 
+                    // proto WebMessageInfoStatus: 2=SERVER_ACK, 3=DELIVERY_ACK,
+                    // 4=READ, 5=PLAYED — >=4 catches READ+PLAYED; the old >=5
+                    // left read messages stuck on gray ✓✓.
+                    $importStatus = $fromMe
+                        ? (((int) ($m['status'] ?? 2)) >= 4
+                            ? WhatsAppMessage::STATUS_READ
+                            : (((int) ($m['status'] ?? 2)) >= 3
+                                ? WhatsAppMessage::STATUS_DELIVERED
+                                : WhatsAppMessage::STATUS_SENT))
+                        : WhatsAppMessage::STATUS_DELIVERED;
+
+                    $values = [
+                        'session_id' => $session->id,
+                        'conversation_id' => $conversation->id,
+                        'from' => $sender,
+                        'to' => $fromMe ? ($m['remoteJid'] ? preg_replace('/\D/', '', explode('@', $m['remoteJid'])[0]) : $phone) : $session->phone_number,
+                        'sender_name' => ($isGroup && !$fromMe) ? ($m['pushName'] ?? null) : null,
+                        'message' => $m['body'] ?? '',
+                        'media_meta' => $mediaMeta,
+                        'media_mime_type' => $m['media']['mimetype'] ?? null,
+                        'media_caption' => $m['media']['caption'] ?? null,
+                        'message_type' => $type,
+                        'direction' => $fromMe ? 'outgoing' : 'incoming',
+                        'reply_to_id' => $m['quotedMessageId'] ?? null,
+                        'sent_at' => $ts,
+                        'timestamp' => $ts,
+                    ];
+
+                    // Status only moves forward — a stale chunk must not
+                    // downgrade a row that live receipts already advanced.
+                    $stored = $storedStatuses[$m['id']] ?? null;
+                    if (!$stored || ($statusRank[$stored] ?? 0) <= ($statusRank[$importStatus] ?? 0)) {
+                        $values['status'] = $importStatus;
+                        $values['delivered_at'] = $importStatus !== WhatsAppMessage::STATUS_SENT ? $ts : null;
+                    }
+
                     WhatsAppMessage::updateOrCreate(
                         [
                             'user_id' => $session->user_id,
                             'message_id' => $m['id'],
                         ],
-                        [
-                            'session_id' => $session->id,
-                            'conversation_id' => $conversation->id,
-                            'from' => $sender,
-                            'to' => $fromMe ? ($m['remoteJid'] ? preg_replace('/\D/', '', explode('@', $m['remoteJid'])[0]) : $phone) : $session->phone_number,
-                            'sender_name' => ($isGroup && !$fromMe) ? ($m['pushName'] ?? null) : null,
-                            'message' => $m['body'] ?? '',
-                            'media_meta' => $mediaMeta,
-                            'media_mime_type' => $m['media']['mimetype'] ?? null,
-                            'media_caption' => $m['media']['caption'] ?? null,
-                            'message_type' => $type,
-                            'direction' => $fromMe ? 'outgoing' : 'incoming',
-                            'status' => $fromMe
-                                ? (((int) ($m['status'] ?? 2)) >= 5
-                                    ? WhatsAppMessage::STATUS_READ
-                                    : (((int) ($m['status'] ?? 2)) >= 3
-                                        ? WhatsAppMessage::STATUS_DELIVERED
-                                        : WhatsAppMessage::STATUS_SENT))
-                                : WhatsAppMessage::STATUS_DELIVERED,
-                            'reply_to_id' => $m['quotedMessageId'] ?? null,
-                            'sent_at' => $ts,
-                            'delivered_at' => $ts,
-                            'timestamp' => $ts,
-                        ]
+                        $values
                     );
                     $imported++;
                 }
@@ -1103,10 +1175,15 @@ class WhatsAppWebhookController extends Controller
                     'media_mime_type' => $data['mimeType'] ?? null,
                     'message_type' => $messageType,
                     'direction' => $fromMe ? 'outgoing' : 'incoming',
-                    'status' => WhatsAppMessage::STATUS_DELIVERED,
+                    // fromMe = sent from the phone app. It reached the server
+                    // (single ✓) but not necessarily the device — 'delivered'
+                    // here was a phantom ✓✓; real receipts advance it.
+                    'status' => $fromMe
+                        ? WhatsAppMessage::STATUS_SENT
+                        : WhatsAppMessage::STATUS_DELIVERED,
                     'reply_to_id' => $data['replyToId'] ?? null,
                     'sent_at' => $msgTime,
-                    'delivered_at' => $msgTime,
+                    'delivered_at' => $fromMe ? null : $msgTime,
                     'timestamp' => $msgTime,
                 ];
                 if (!empty($data['mediaUrl'])) {
@@ -1114,6 +1191,14 @@ class WhatsAppWebhookController extends Controller
                 }
                 if (!empty($data['mediaMeta']) && is_array($data['mediaMeta'])) {
                     $msgValues['media_meta'] = $data['mediaMeta'];
+                }
+                // A re-delivered webhook must not rewind a row that delivery/
+                // read receipts already advanced.
+                if ($messageId && WhatsAppMessage::where('user_id', $session->user_id)
+                        ->where('message_id', $messageId)
+                        ->whereIn('status', [WhatsAppMessage::STATUS_DELIVERED, WhatsAppMessage::STATUS_READ])
+                        ->exists()) {
+                    unset($msgValues['status'], $msgValues['delivered_at']);
                 }
                 $incomingMessage = WhatsAppMessage::updateOrCreate(
                     [

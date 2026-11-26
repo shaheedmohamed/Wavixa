@@ -85,4 +85,9 @@ class WhatsAppMessage extends Model
     {
         return $this->belongsTo(WhatsAppSession::class, 'session_id');
     }
+
+    public function conversation(): BelongsTo
+    {
+        return $this->belongsTo(WhatsAppConversation::class, 'conversation_id');
+    }
 }

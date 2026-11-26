@@ -3686,6 +3686,55 @@ export class WaClient extends EventEmitter {
   }
 
   /**
+   * "Delete for me" — writes a deleteMessageForMeAction syncd mutation to
+   * regular_high (the collection Baileys/WA Web use for deletes). This is the
+   * only mechanism that wipes the message on the primary phone and linked
+   * devices — a plain local delete only hides it in the CRM.
+   */
+  public async deleteMessageForMe(
+    jid: string,
+    opts: {
+      messageId: string;
+      fromMe: boolean;
+      timestamp?: number;
+      deleteMedia?: boolean;
+    },
+  ): Promise<void> {
+    const destinationJid = jid.includes('@')
+      ? jid
+      : jidEncode(jid.replace(/\D/g, ''), 's.whatsapp.net');
+
+    // LID-migrated chats key the message under either identity form — emit a
+    // mutation per known form (same rule sendRevokeMessage follows); a
+    // non-matching index is silently ignored by the devices.
+    const keyForms = new Set<string>([destinationJid]);
+    try {
+      const counterpart = (await this.resolveLidUsers([destinationJid])).get(
+        destinationJid,
+      );
+      if (counterpart) keyForms.add(counterpart);
+    } catch { /* resolution is best-effort */ }
+
+    const ts = opts.timestamp ?? Math.floor(Date.now() / 1000);
+    const mutations: OutgoingMutation[] = [...keyForms].map((keyForm) => ({
+      // Wire format per WA Web: last index element is literally '0'.
+      index: ['deleteMessageForMe', keyForm, opts.messageId, opts.fromMe ? '1' : '0', '0'],
+      version: 3,
+      value: {
+        deleteMessageForMeAction: {
+          deleteMedia: opts.deleteMedia ?? false,
+          messageTimestamp: ts,
+        },
+      },
+    }));
+    await this.queueAppStateSend('regular_high', mutations);
+    logger.info(
+      { to: destinationJid, keyForms: [...keyForms], messageId: opts.messageId },
+      'delete-for-me sent',
+    );
+  }
+
+  /**
    * Pin / unpin a message inside a chat — proto.pinInChatMessage sent as a
    * normal stanza, exactly like WhatsApp Web's "Pin message". The duration
    * itself is a client-side concern; the stanza only carries the key.

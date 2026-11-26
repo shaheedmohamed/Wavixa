@@ -665,6 +665,26 @@ export class Session {
     return this.waClient.sendRevokeMessage(to, opts);
   }
 
+  /** "Delete for me" — app-state mutation that removes the message on all own devices. */
+  public async deleteMessageForMe(
+    to: string,
+    opts: {
+      messageId: string;
+      fromMe: boolean;
+      timestamp?: number;
+      deleteMedia?: boolean;
+    },
+  ): Promise<void> {
+    const state = this.stateMachine.getState();
+    if (state !== 'READY' && state !== 'CONNECTED') {
+      throw new Error(`Session is not connected (state: ${state})`);
+    }
+    if (!this.waClient) {
+      throw new Error('WhatsApp client not initialized');
+    }
+    return this.waClient.deleteMessageForMe(to, opts);
+  }
+
   /**
    * Ask the primary phone for an on-demand full history sync. The response
    * arrives asynchronously as 'history.sync' events.

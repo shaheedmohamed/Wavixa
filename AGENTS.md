@@ -291,6 +291,40 @@ reports decrypt failure via `<receipt type="retry">`. Sent payloads live in
 engine restart cannot be retried. If a previously-sent message stays stuck on
 "Waiting for this message", resend it manually.
 
+### Receipt → tick semantics (2026-11-26)
+
+`<receipt>` `type` attr → CRM status, in `routes.ts` `session.onNode`:
+
+- `undefined` / `'delivery'` → `delivered` (✓✓). EVERYTHING else is NOT a
+  delivery confirmation: `'inactive'` (queued for an offline device — still
+  single ✓ in WhatsApp), `'sender'` (bare server ack — single ✓),
+  `'retry'`/`'mediaretry'`/`'server-error'` (re-encrypt, handled in WaClient),
+  `'read-self'`/`'played-self'` (own-device reads), `'peer_msg'`/`'hist_sync'`
+  (plumbing). The old code mapped all of these to `delivered` — that was the
+  phantom ✓✓ bug (CRM showed delivered while WhatsApp showed a single ✓).
+- `'read'` / `'played'` → `read` (blue ✓✓).
+- Batched receipts carry extra ids in `<list><item id="…"/>` children —
+  forwarding only `attrs.id` left earlier messages on gray ticks.
+
+Receipts are **cumulative** in 1:1 chats: a receipt for message N covers every
+earlier outgoing message in that conversation (that's how one receipt blues a
+whole WhatsApp thread). `updateReceiptStatus` (both backends) bumps them and
+backfills `delivered_at` on sent→read jumps. Groups/`@g.us`/`@broadcast`/
+`@newsletter` stay per-id — one participant's ack says nothing about the rest.
+
+Status is forward-only everywhere: `updateReceiptStatus` rank guard, the
+history-import `$storedStatuses` check, and the `messageReceived`
+already-delivered/read guard all refuse downgrades — a replayed chunk or
+re-delivered webhook can never rewind read → delivered → sent.
+
+Proto `WebMessageInfoStatus`: 2=SERVER_ACK, 3=DELIVERY_ACK, 4=READ, 5=PLAYED.
+History import must test `>=4` for READ — the old `>=5` only caught PLAYED,
+leaving synced read messages on gray ✓✓ forever.
+
+fromMe messages (sent from the phone app, seen via `message-received` or
+history sync) are only `sent` until a real receipt lands — stamping them
+`delivered` at insert was the other phantom ✓✓ source.
+
 ### WhatsApp Statuses / stories (2026-10-15)
 
 Status updates arrive as ordinary messages addressed to `status@broadcast`

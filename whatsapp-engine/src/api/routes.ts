@@ -13,6 +13,7 @@ import { MetricsCollector } from '../monitoring/MetricsCollector.js';
 import { EventBus } from '../events/EventBus.js';
 import { MediaManager } from '../message/MediaManager.js';
 import { FileCredsStore } from '../waweb/WaCreds.js';
+import { BinaryNode } from '../protocol/binary/BinaryNode.js';
 import { logger } from '../config/Logger.js';
 
 export interface RouteDependencies {
@@ -225,22 +226,51 @@ export function createRoutes(deps: RouteDependencies): express.Router {
       session.onNode((node) => {
         try {
           if (node.tag === 'receipt') {
-            const id = node.attrs.id;
-            if (!id) return;
             const type = node.attrs.type;
-            // 'retry' receipts ask us to re-encrypt — handled in WaClient; they
-            // are not a delivery confirmation and must not flip message status.
-            if (type === 'retry' || type === 'mediaretry' || type === 'server-error' || type === 'read-self') return;
+            // Only a no-type/'delivery' receipt means the peer DEVICE got the
+            // message; 'read'/'played' blue the ticks. Everything else is NOT
+            // a delivery confirmation:
+            //   'inactive'        — queued for an offline device (still ✓)
+            //   'sender'          — bare server ack (still ✓)
+            //   'retry'/'mediaretry'/'server-error' — re-encrypt requests,
+            //                       handled in WaClient
+            //   'read-self'/'played-self' — own-device reads of INCOMING msgs
+            //   'peer_msg'/'hist_sync'/… — protocol plumbing
+            // Forwarding any of those as 'delivered' shows a phantom ✓✓ while
+            // WhatsApp itself still shows a single ✓.
             const status =
-              type === 'read' || type === 'played' ? 'read' : 'delivered';
-            eventBus.emit('message.status', {
-              event: 'message.status',
-              session_id: sessionId,
-              message_id: id,
-              from: node.attrs.from,
-              timestamp: Math.floor(Date.now() / 1000),
-              data: { status },
-            });
+              type === 'read' || type === 'played'
+                ? 'read'
+                : !type || type === 'delivery'
+                  ? 'delivered'
+                  : undefined;
+            if (!status) return;
+            // WhatsApp batches receipts: extra ids ride inside
+            // <list><item id="…"/> children — forwarding only attrs.id leaves
+            // earlier messages stuck on gray ticks.
+            const ids = new Set<string>();
+            if (node.attrs.id) ids.add(String(node.attrs.id));
+            const children = Array.isArray(node.content) ? node.content : [];
+            for (const child of children) {
+              if (!child || typeof child !== 'object') continue;
+              const items = Array.isArray((child as BinaryNode).content)
+                ? ((child as BinaryNode).content as BinaryNode[])
+                : [];
+              for (const item of items) {
+                const iid = item?.attrs?.id;
+                if (iid) ids.add(String(iid));
+              }
+            }
+            for (const id of ids) {
+              eventBus.emit('message.status', {
+                event: 'message.status',
+                session_id: sessionId,
+                message_id: id,
+                from: node.attrs.from,
+                timestamp: Math.floor(Date.now() / 1000),
+                data: { status },
+              });
+            }
           } else if (node.tag === 'chatstate') {
             const children = Array.isArray(node.content) ? node.content : [];
             const child = children.find((c) => typeof c === 'object' && c !== null) as
@@ -855,6 +885,44 @@ export function createRoutes(deps: RouteDependencies): express.Router {
     try {
       const result = await session.sendRevokeMessage(to, { messageId, fromMe: true });
       res.json({ success: true, messageId: result.id });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        message: err instanceof Error ? err.message : 'Delete failed',
+      });
+    }
+  });
+
+  // "Delete for me" — writes a deleteMessageForMe app-state mutation so the
+  // message also disappears from the owner's phone and linked devices (the
+  // CRM's local row delete alone only hides it in the CRM).
+  router.post(['/internal/messages/delete-for-me', '/api/whatsapp/delete-message-for-me'], async (req: Request, res: Response) => {
+    const { userId, sessionId: reqSessionId, to, messageId, fromMe, timestamp, deleteMedia } = req.body;
+    const sessionId = reqSessionId || String(userId);
+
+    if (!sessionId || !to || !messageId) {
+      res.status(400).json({ success: false, message: 'sessionId, to, and messageId are required' });
+      return;
+    }
+
+    const session = activeSessions.get(sessionId);
+    const sessionState = session?.getState();
+    if (!session || !session.getClient() || (sessionState !== 'READY' && sessionState !== 'CONNECTED')) {
+      res.status(409).json({
+        success: false,
+        message: `Session is not connected to WhatsApp (state: ${sessionState || 'missing'})`,
+      });
+      return;
+    }
+
+    try {
+      await session.deleteMessageForMe(to, {
+        messageId: String(messageId),
+        fromMe: Boolean(fromMe),
+        timestamp: typeof timestamp === 'number' && timestamp > 0 ? Math.floor(timestamp) : undefined,
+        deleteMedia: Boolean(deleteMedia),
+      });
+      res.json({ success: true });
     } catch (err) {
       res.status(500).json({
         success: false,
